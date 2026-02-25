@@ -13,35 +13,35 @@ graph TD
     classDef secret fill:#d69e2e,stroke:#b7791f,stroke-width:2px,color:#fff
 
     %% Components
-    subgraph "Lab Build Environment"
-        UserAction(("👨‍💻 User Action")) ::: user
-        RawExtract["📂 c-kserve-raw<br/>(Extracted Manifests)"] ::: git
-        Cert["📜 cert.crt<br/>(Firewall Trusted Chain)"] ::: secret
-        DockerCreds["🔑 docker login<br/>rajeshpnhcl"] ::: secret
+    subgraph SG1 [Lab Build Environment]
+        UserAction["👨‍💻 User Action"] ::: user
+        RawExtract["📂 c-kserve-raw (Extracted Manifests)"] ::: git
+        Cert["📜 cert.crt (Firewall Trusted Chain)"] ::: secret
+        DockerCreds["🔑 docker login rajeshpnhcl"] ::: secret
         
-        Generator["⚙️ generate-kserve-operator.sh<br/>(Scaffolding, Patching, Building)"] ::: script
+        Generator["⚙️ generate-kserve-operator.sh"] ::: script
         
-        subgraph "Docker Build Engine"
-            GoBuilder["📦 Builder Stage<br/>(FROM golang:1.24)<br/>+ update-ca-certificates"] ::: docker
-            Proxy["🌐 Corporate Firewall<br/>(Deep Packet Inspection)"]
-            GoMods[("📦 Go Modules<br/>(proxy.golang.org)")]
-            FinalImage[("🐳 Final Operator Image<br/>(FROM distroless)")] ::: docker
+        subgraph SG2 [Docker Build Engine]
+            GoBuilder["📦 Builder Stage (FROM golang:1.24) <br> + update-ca-certificates"] ::: docker
+            Proxy["🌐 Corporate Firewall (Deep Packet Inspection)"]
+            GoMods["📦 Go Modules (proxy.golang.org)"]
+            FinalImage["🐳 Final Operator Image (FROM distroless)"] ::: docker
         end
     end
 
-    subgraph "External Systems"
-        Registry[("🐳 Docker Hub Registry<br/>(rajeshpnhcl/...)")] ::: docker
+    subgraph SG3 [External Systems]
+        Registry["🐳 Docker Hub Registry (rajeshpnhcl/...)"] ::: docker
     end
 
-    subgraph "Kubernetes Target Cluster"
-        OLM["⚙️ Operator Lifecycle<br/>Manager (OLM)"] ::: k8s
-        ClusterSecrets["🔐 ImagePullSecret<br/>(dockerhub-creds)"] ::: secret
-        ControllerPod["🏃 Operator Pod<br/>(KServeRawMode Controller)"] ::: k8s
-        CRD["📄 Custom Resource<br/>(KServeRawMode)"] ::: k8s
+    subgraph SG4 [Kubernetes Target Cluster]
+        OLM["⚙️ Operator Lifecycle Manager (OLM)"] ::: k8s
+        ClusterSecrets["🔐 ImagePullSecret (dockerhub-creds)"] ::: secret
+        ControllerPod["🏃 Operator Pod (KServeRawMode Controller)"] ::: k8s
+        CRD["📄 Custom Resource (KServeRawMode)"] ::: k8s
         
-        subgraph "Target Workloads"
-            SetupSequence["🔢 KServe Raw Sequence<br/>1. Cert-Manager<br/>2. CRDs<br/>3. Webhooks<br/>4. Core Controllers<br/>5. Serving Runtimes"] ::: k8s
-            InferencePods["🚀 Running Inferences<br/>(e.g., sklearn-iris)"] ::: k8s
+        subgraph SG5 [Target Workloads]
+            SetupSequence["🔢 KServe Raw Sequence <br> 1. Cert-Manager <br> 2. CRDs <br> 3. Webhooks <br> 4. Core Controllers <br> 5. Serving Runtimes"] ::: k8s
+            InferencePods["🚀 Running Inferences (e.g., sklearn-iris)"] ::: k8s
         end
     end
 
