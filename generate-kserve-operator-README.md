@@ -148,3 +148,17 @@ The tooling is registry-agnostic. To use an internal or private registry:
   --pull-secret my-internal-secret \
   --olm
 ```
+
+## Handling KServe Dependencies (Mirrors)
+
+By default, the KServe manifests extracted by `generate-kserve-raw.sh` reference official images hosted on **Docker Hub** (e.g., `kserve/kserve-controller`) and **Quay.io** (e.g., `quay.io/jetstack/cert-manager-controller`).
+
+If your environment blocks access to these public registries, you should:
+
+1.  **Mirror the Images**: Pull the official images and push them to your internal registry.
+2.  **Redirect the Manifests**: Before running `generate-kserve-operator.sh`, you can use Kustomize to redirect the source manifests in your extracted folder:
+    ```bash
+    cd <extracted-raw-folder>/04-kserve-core
+    kustomize edit set image kserve/kserve-controller=internal-registry.com/mirrors/kserve-controller:v0.12.0
+    ```
+3.  **ConfigMap Updates**: KServe also uses a ConfigMap (`inferenceservice-config`) to define images for predictors (sklearn, pytorch, etc.). Our automated generator preserves these references. You can manually edit the `04-kserve-core/kserve-core.yaml` to point these to your internal mirrors if required.

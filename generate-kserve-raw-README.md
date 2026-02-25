@@ -80,3 +80,12 @@ cd <your-target-directory>
 ```
 
 The installer handles race-conditions by imposing explicit `kubectl wait` and `sleep 15` buffers, ensuring the webhooks do not reject the KServe runtime configurations during a cold start, and then prints exact copy-paste terminal commands to test the Iris model.
+
+## Handling Public Registries (Airgapped Environments)
+
+By default, the extracted manifests reference official images on **Docker Hub**, **Quay.io**, and **GCR**. 
+
+If your environment is airgapped or restricts these registries:
+1.  **Mirror the Images**: Push the images mentioned in the YAML files to your internal registry.
+2.  **Kustomize Overrides**: Use `kustomize edit set image` within the `kserve-master` source directory *before* running this script, or edit the generated `.yaml` files in `04-kserve-core` manually.
+3.  **ConfigMap Patching**: The `inferenceservice-config` ConfigMap in `04-kserve-core/kserve-core.yaml` contains JSON blocks defining images for predictors. Ensure these are also updated to point to your mirrored locations.
