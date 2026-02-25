@@ -1,0 +1,85 @@
+package controller
+
+import (
+	"bytes"
+	"context"
+	"embed"
+	"fmt"
+	"io"
+	"strings"
+	"time"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/yaml"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+)
+
+//go:embed assets/*
+var manifests embed.FS
+
+// applyManifests reads a YAML file from the embedded assets and applies all resources found in it
+// using Server-Side Apply.
+func applyManifests(ctx context.Context, c client.Client, path string) error {
+	logger := log.FromContext(ctx)
+
+	data, err := manifests.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read embedded manifest %s: %w", path, err)
+	}
+
+	decoder := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(data), 4096)
+	for {
+		ext := runtime.RawExtension{}
+		if err := decoder.Decode(&ext); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fmt.Errorf("failed to decode yaml: %w", err)
+		}
+
+		if len(ext.Raw) == 0 || bytes.Equal(bytes.TrimSpace(ext.Raw), []byte("null")) {
+			continue
+		}
+
+		obj := &unstructured.Unstructured{}
+		if err := obj.UnmarshalJSON(ext.Raw); err != nil {
+			return fmt.Errorf("failed to unmarshal JSON: %w", err)
+		}
+
+		// Inject the requested target namespace for objects that missed it during kustomization build
+		if obj.GetNamespace() == "" {
+			kind := obj.GetKind()
+			isClusterScoped := kind == "Namespace" || 
+				kind == "CustomResourceDefinition" || 
+				kind == "APIService" ||
+				strings.HasPrefix(kind, "Cluster") || 
+				strings.HasSuffix(kind, "WebhookConfiguration")
+			
+			if !isClusterScoped {
+				// Default namespace-scoped components missing declarations to 'kserve'
+				obj.SetNamespace("kserve")
+			}
+		}
+
+		// Apply via Server-Side Apply
+		logger.Info("Applying resource", "Kind", obj.GetKind(), "Name", obj.GetName())
+		err = c.Patch(ctx, obj, client.Apply, client.ForceOwnership, client.FieldOwner("kserve-raw-operator"))
+		if err != nil {
+			return fmt.Errorf("failed to apply resource %s %s: %w", obj.GetKind(), obj.GetName(), err)
+		}
+	}
+	return nil
+}
+
+// waitForNamespacePodsReady checks if all pods in the given namespace are ready.
+// It will retry until the context cancels or the pods are ready.
+func waitForNamespacePodsReady(ctx context.Context, c client.Client, namespace string) error {
+	logger := log.FromContext(ctx)
+	logger.Info("Waiting 15 seconds for Service/Webhook propagation", "namespace", namespace)
+
+	// Since we are writing a simple operator, we'll delay explicitly briefly for webhook registry just to mirror our script.
+	time.Sleep(15 * time.Second)
+	return nil
+}

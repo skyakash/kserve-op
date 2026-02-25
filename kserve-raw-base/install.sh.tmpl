@@ -1,0 +1,38 @@
+#!/bin/bash
+set -e
+
+echo "1. Installing Cert-Manager..."
+kubectl apply -f 01-cert-manager/cert-manager.yaml
+kubectl wait --for=condition=ready pod -l app=cert-manager -n cert-manager --timeout=300s
+kubectl wait --for=condition=ready pod -l app=webhook -n cert-manager --timeout=300s
+
+echo "2. Installing KServe CRDs..."
+kubectl apply --server-side -f 02-kserve-crds/kserve-crds.yaml
+
+echo "3. Installing KServe RBAC..."
+kubectl create namespace kserve || true
+kubectl apply -f 03-kserve-rbac/kserve-rbac.yaml
+
+echo "4. Installing KServe Core Components (Configured for Raw Mode)..."
+kubectl apply --server-side -f 04-kserve-core/kserve-core.yaml
+
+echo "Waiting for KServe Webhooks to stabilize..."
+kubectl wait --for=condition=ready pod -l control-plane=kserve-controller-manager -n kserve --timeout=300s
+sleep 15
+
+echo "5. Installing Default ClusterServingRuntimes..."
+kubectl apply --server-side -f 05-kserve-runtimes/kserve-cluster-resources.yaml
+
+echo "=========================================="
+echo "   KServe Raw Mode Installation Complete  "
+echo "=========================================="
+echo ""
+echo "To verify the installation works, you can deploy a sample InferenceService:"
+echo "  kubectl apply -f 06-sample-model/sklearn-iris.yaml"
+echo ""
+echo "Wait for the service to be ready:"
+echo "  kubectl wait --for=condition=Ready inferenceservice/sklearn-iris --timeout=120s"
+echo ""
+echo "Port-forward and test it:"
+echo "  kubectl port-forward svc/sklearn-iris-predictor 8080:80 &"
+echo "  curl -A \"curl\" -s -X POST -H 'Content-Type: application/json' -d @06-sample-model/iris-input.json http://localhost:8080/v1/models/sklearn-iris:predict"

@@ -1,0 +1,10 @@
+# Ignore generated deployment directories
+*-kserve-raw/
+*-kserve-operator/
+*-kserve-operator-package/
+
+# Ignore local KServe source repository clone
+kserve-master/
+
+# System files
+.DS_Store

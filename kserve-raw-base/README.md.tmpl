@@ -1,0 +1,44 @@
+# KServe Raw Mode Deployment
+
+This standalone directory contains all the manifests required to install **KServe configured for Raw Deployment Mode**, ensuring that InferenceServices deploy as standard Kubernetes Deployments/Services (no Knative or Istio required).
+
+## Directory Structure
+1. `01-cert-manager`: Cert-Manager manifests (required for KServe webhooks).
+2. `02-kserve-crds`: KServe Custom Resource Definitions.
+3. `03-kserve-rbac`: KServe ClusterRoles and authentication bindings.
+4. `04-kserve-core`: The KServe Controller Manager (Patched with `"defaultDeploymentMode": "RawDeployment"` and explicitly appends the `selfsigned-issuer` so webhooks can establish TLS).
+5. `05-kserve-runtimes`: Default Predictor Runtimes (Scikit-Learn, PyTorch, Triton, HuggingFace).
+6. `06-sample-model`: A sample `sklearn-iris` model and its test payload.
+7. `install.sh`: An automated deployment script handling the webhook sleep sequences.
+
+## Installation
+Ensure you are connected to a healthy Kubernetes cluster.
+
+### Fast Installation
+Simply execute the installer script from this directory:
+```bash
+./install.sh
+```
+
+### Manual Installation
+If applying manually, you must follow this exact order and wait for the pods in the previous step to become `Ready` before proceeding:
+```bash
+kubectl apply -f 01-cert-manager/cert-manager.yaml
+kubectl apply --server-side -f 02-kserve-crds/kserve-crds.yaml
+kubectl apply -f 03-kserve-rbac/kserve-rbac.yaml
+kubectl apply --server-side -f 04-kserve-core/kserve-core.yaml
+
+# WAIT 15+ SECONDS for Webhooks to register their IPs in Kubernetes!
+kubectl apply --server-side -f 05-kserve-runtimes/kserve-cluster-resources.yaml
+```
+
+## Validation
+To prove the cluster is working, deploy the sample model:
+```bash
+kubectl apply -f 06-sample-model/sklearn-iris.yaml
+```
+Once `Ready`, test it directly without ingress routing:
+```bash
+kubectl port-forward svc/sklearn-iris-predictor 8080:80 &
+curl -s -X POST -H 'Content-Type: application/json' -d @06-sample-model/iris-input.json http://localhost:8080/v1/models/sklearn-iris:predict
+```

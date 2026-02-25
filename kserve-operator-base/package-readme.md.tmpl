@@ -1,0 +1,71 @@
+# KServe Operator Installation Package
+
+## Overview
+This package contains the fully compiled deployment manifests required to install KServe automatically on your cluster using a custom, lightweight Operator. It operates entirely independently of Knative or Istio, utilizing Kubernetes native Deployments for inference serving workloads.
+
+## Prerequisites
+- A functional Kubernetes Cluster (v1.24+ recommended).
+- `kubectl` installed and configured to access your cluster with ClusterAdmin privileges.
+
+## Deployment Instructions
+
+1. **Deploy the Operator**: This command registers the required Custom Resource Definitions and deploys the Operator Controller Manager into the `TARGET_DIR_NAME-system` namespace.
+   ```bash
+   kubectl apply -f operator-deployment.yaml
+   ```
+
+2. **Wait for Operator**: Wait a few moments for the Operator pod to boot successfully before proceeding.
+   ```bash
+   kubectl get pods -n TARGET_DIR_NAME-system
+   # Alternatively, block until ready:
+   kubectl wait --for=condition=ready pod -l control-plane=controller-manager -n TARGET_DIR_NAME-system --timeout=120s
+   ```
+
+3. **Install KServe**: Submit the custom resource payload to trigger the Operator's internal installation loop.
+   ```bash
+   kubectl apply -f kserverawmode-sample.yaml
+   ```
+
+4. **Wait for KServe Webhooks**: Wait for the KServe Controller Manager to start and expose its validation webhooks, which are absolutely required before creating InferenceServices.
+   ```bash
+   # Wait for the Operators internal reconciliation loop to generate the Pods
+   sleep 10
+   
+   kubectl wait --for=condition=ready pod -l control-plane=kserve-controller-manager -n kserve --timeout=300s
+   
+   # Allow networking logic to map the webhook service endpoints (prevents 'connection refused')
+   sleep 15
+   ```
+
+5. **Verify Operator Deployment**: Before proceeding to inference, quickly verify that all KServe system components have properly initialized:
+   ```bash
+   # Verify KServe Controller Manager Pods
+   kubectl get pods -n kserve
+   
+   # Verify InferenceService Custom Resource Definitions exist
+   kubectl get crd | grep kserve
+   ```
+
+## Verification (Iris Inference)
+
+Once the `kserve` namespace has populated and all controller manager pods indicate they are Ready, you can verify inference capabilities:
+
+1. **Deploy Sample Model**:
+   ```bash
+   kubectl apply -f 06-sample-model/sklearn-iris.yaml
+   ```
+
+2. **Wait for Predictor Check**:
+   ```bash
+   kubectl get pods -l serving.kserve.io/inferenceservice=sklearn-iris
+   ```
+   Wait until the `sklearn-iris-predictor-<hash>` pod is `Running (1/1)`.
+
+3. **Test Inference**: Port-forward the model service and submit the input payload.
+   ```bash
+   kubectl port-forward svc/sklearn-iris-predictor 8080:80 &
+   
+   curl -s -X POST -H "Content-Type: application/json" -d @06-sample-model/iris-input.json "http://localhost:8080/v1/models/sklearn-iris:predict"
+   ```
+   
+   **Expected Result**: `{"predictions": [1, 1]}`
