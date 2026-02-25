@@ -33,6 +33,8 @@ chmod +x generate-kserve-operator.sh
 - `-b, --build`          : Automatically build the Docker image without prompting
 - `-p, --push`           : Automatically push the Docker image without prompting
 - `-x, --multi-platform` : Automatically compiles and pushes a multi-architecture image (amd64, arm64, s390x, ppc64le) using `docker-buildx`. *(Implies `-b`)*
+- `-o, --olm`            : Automatically generates and builds an Operator Lifecycle Manager (OLM) Bundle image for the registry. *(Implies `-b`)*
+- `--pull-secret <name>` : Automatically configures the operator to use an existing `imagePullSecret` to pull its own image (useful for private registries or Docker Hub rate limits).
 - `-h, --help`           : Show help message
 
 ### Interactive Prompts
@@ -84,6 +86,17 @@ kubectl apply -f operator-deployment.yaml
 sleep 5
 kubectl apply -f kserverawmode-sample.yaml
 ```
+
+### Option C: OLM Bundle Deployment (Enterprise Ready)
+
+If you generated an OLM bundle using the `-o` flag, you can install the operator using the **Operator Lifecycle Manager**. This is the recommended approach for production clusters as it manages upgrades and dependencies automatically:
+
+```bash
+# Deploy the bundle directly using Operator SDK
+operator-sdk run bundle <your-image-tag>-bundle
+```
+
+*Note: If you provided a `--pull-secret`, the generated OLM CSV will automatically include it, ensuring the bundle can be unpacked on clusters with pull restrictions.*
 
 ## End-to-End Validation (Testing Iris Inference)
 

@@ -26,6 +26,17 @@ This package contains the fully compiled deployment manifests required to instal
    kubectl apply -f kserverawmode-sample.yaml
    ```
 
+### Option B: OLM Bundle Installation (Enterprise Recommended)
+
+If this package was provided with an OLM Bundle image, you can install the operator using the **Operator Lifecycle Manager**. This provides automated updates and cleaner lifecycle management:
+
+```bash
+# Run the bundle directly
+operator-sdk run bundle <your-bundle-image-tag>
+```
+
+*(Note: Check your provider for the specific bundle image tag if it was not included in your documentation snippet.)*
+
 4. **Wait for KServe Webhooks**: Wait for the KServe Controller Manager to start and expose its validation webhooks, which are absolutely required before creating InferenceServices.
    ```bash
    # Wait for the Operators internal reconciliation loop to generate the Pods

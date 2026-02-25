@@ -18,6 +18,8 @@ MANIFEST_DIR=""
 IMAGE_TAG=""
 AUTO_PUSH=false
 MULTI_PLATFORM=false
+GEN_OLM_BUNDLE=false
+IMAGE_PULL_SECRET=""
 
 # 1. Parse CLI Arguments
 while [[ "$#" -gt 0 ]]; do
@@ -30,6 +32,8 @@ while [[ "$#" -gt 0 ]]; do
         -b|--build) AUTO_BUILD=true; shift 1 ;;
         -p|--push) AUTO_PUSH=true; shift 1 ;;
         -x|--multi-platform) MULTI_PLATFORM=true; AUTO_BUILD=true; shift 1 ;;
+        -o|--olm) GEN_OLM_BUNDLE=true; AUTO_BUILD=true; shift 1 ;;
+        --pull-secret) IMAGE_PULL_SECRET="$2"; shift 2 ;;
         -h|--help)
             echo "Usage: $0 [options]"
             echo "Options:"
@@ -41,6 +45,8 @@ while [[ "$#" -gt 0 ]]; do
             echo "  -b, --build          Automatically build the Docker image without prompting"
             echo "  -p, --push           Automatically push the Docker image without prompting"
             echo "  -x, --multi-platform Build and push for multiple architectures (linux/amd64, arm64, etc.)"
+            echo "  -o, --olm            Generate and build an OLM bundle for the operator (implies -b)"
+            echo "  --pull-secret <name> Add an imagePullSecret to the operator deployment"
             exit 0
             ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
@@ -139,6 +145,19 @@ else
     sed -i "s|REPLACE_API_DOMAIN|${API_DOMAIN}|g" "internal/controller/kserverawmode_controller.go"
 fi
 
+if [ -n "$IMAGE_PULL_SECRET" ]; then
+    echo "Adding imagePullSecret '${IMAGE_PULL_SECRET}' to manager.yaml..."
+    # We insert imagePullSecrets: [{name: secret}] before the 'containers:' line in config/manager/manager.yaml
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' "/containers:/i \\
+      imagePullSecrets: \\
+      - name: ${IMAGE_PULL_SECRET} \\
+" config/manager/manager.yaml
+    else
+        sed -i "/containers:/i \      imagePullSecrets:\n      - name: ${IMAGE_PULL_SECRET}" config/manager/manager.yaml
+    fi
+fi
+
 echo ""
 echo "[4/5] Generating RBAC, DeepCopy, and running 'go mod tidy'..."
 
@@ -160,11 +179,17 @@ if [[ "$BUILD_CHOICE" =~ ^[Yy]$ ]]; then
     if [ "$MULTI_PLATFORM" = true ]; then
         echo "Running 'make docker-buildx IMG=${IMAGE_TAG}'..."
         echo "NOTE: Multi-platform build automatically pushes to the registry."
-        make docker-buildx IMG="${IMAGE_TAG}"
+        if ! make docker-buildx IMG="${IMAGE_TAG}"; then
+            echo "ERROR: Multi-platform build failed."
+            exit 1
+        fi
         echo "The cross-platform image '${IMAGE_TAG}' has been successfully built and pushed!"
     else
         echo "Running 'make docker-build IMG=${IMAGE_TAG}'..."
-        make docker-build IMG="${IMAGE_TAG}"
+        if ! make docker-build IMG="${IMAGE_TAG}"; then
+            echo "ERROR: Docker build failed."
+            exit 1
+        fi
         echo "The Operator container image '${IMAGE_TAG}' has been successfully built!"
         
         if [ "$AUTO_PUSH" = true ]; then
@@ -176,12 +201,50 @@ if [[ "$BUILD_CHOICE" =~ ^[Yy]$ ]]; then
         
         if [[ "$PUSH_CHOICE" =~ ^[Yy]$ ]]; then
             echo "Running 'make docker-push IMG=${IMAGE_TAG}'..."
-            make docker-push IMG="${IMAGE_TAG}"
+            if ! make docker-push IMG="${IMAGE_TAG}"; then
+                echo "ERROR: Docker push failed."
+                exit 1
+            fi
             echo "The image has been successfully pushed!"
         fi
     fi
 else
     echo "Skipping Docker build."
+fi
+
+if [ "$GEN_OLM_BUNDLE" = true ]; then
+    echo ""
+    echo ""
+    echo "[5.5/6] Generating OLM Bundle..."
+    
+    echo "Configuring OLM metadata options (disabling interactive prompts)..."
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' 's/generate kustomize manifests -q/generate kustomize manifests -q --interactive=false/g' Makefile
+    else
+        sed -i 's/generate kustomize manifests -q/generate kustomize manifests -q --interactive=false/g' Makefile
+    fi
+
+    echo "Running 'make bundle IMG=${IMAGE_TAG}'..."
+    make bundle IMG="${IMAGE_TAG}"
+    BUNDLE_IMG="${IMAGE_TAG}-bundle"
+    
+    if [ "$MULTI_PLATFORM" = true ]; then
+        echo "Running multi-platform bundle build for ${BUNDLE_IMG}..."
+        # We use docker buildx directly as the default Makefile doesn't have bundle-buildx
+        # We need to make sure we use a canonical name if possible, but we'll stick to what user provided
+        docker buildx build --push --platform=linux/arm64,linux/amd64,linux/s390x,linux/ppc64le --tag "${BUNDLE_IMG}" -f bundle.Dockerfile .
+        echo "The multi-platform OLM Bundle image '${BUNDLE_IMG}' has been successfully built and pushed!"
+    else
+        echo "Running 'make bundle-build BUNDLE_IMG=${BUNDLE_IMG}'..."
+        make bundle-build BUNDLE_IMG="${BUNDLE_IMG}"
+        echo "The OLM Bundle image '${BUNDLE_IMG}' has been successfully built!"
+        
+        if [[ "$PUSH_CHOICE" =~ ^[Yy]$ ]] || [ "$AUTO_PUSH" = true ]; then
+            echo "Running 'make bundle-push BUNDLE_IMG=${BUNDLE_IMG}'..."
+            make bundle-push BUNDLE_IMG="${BUNDLE_IMG}"
+            echo "The OLM Bundle image has been successfully pushed!"
+        fi
+    fi
 fi
 
 echo ""
@@ -238,4 +301,10 @@ echo "The Customer-Facing Operator Package has been created at:"
 echo "  -> ${PACKAGE_DIR}"
 echo ""
 echo "You can share the '${TARGET_DIR_NAME}-package' folder for immediate deployment!"
+
+if [ "$GEN_OLM_BUNDLE" = true ]; then
+    echo ""
+    echo "To deploy via OLM, execute the following command:"
+    echo "  operator-sdk run bundle ${IMAGE_TAG}-bundle"
+fi
 echo "================================================================="
