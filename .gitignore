@@ -2,9 +2,15 @@
 *-kserve-raw/
 *-kserve-operator/
 *-kserve-operator-package/
+bundle-*/
 
 # Ignore local KServe source repository clone
 kserve-master/
+
+# Temporary test artifacts
+*.log
+inference_result.json
+test-kserve-installation.yaml
 
 # System files
 .DS_Store
