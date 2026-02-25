@@ -20,6 +20,8 @@ AUTO_PUSH=false
 MULTI_PLATFORM=false
 GEN_OLM_BUNDLE=false
 IMAGE_PULL_SECRET=""
+TRUST_CERT_PATH=""
+TRUST_CERT_TYPE="debian" # or rhel
 
 # 1. Parse CLI Arguments
 while [[ "$#" -gt 0 ]]; do
@@ -34,6 +36,8 @@ while [[ "$#" -gt 0 ]]; do
         -x|--multi-platform) MULTI_PLATFORM=true; AUTO_BUILD=true; shift 1 ;;
         -o|--olm) GEN_OLM_BUNDLE=true; AUTO_BUILD=true; shift 1 ;;
         --pull-secret) IMAGE_PULL_SECRET="$2"; shift 2 ;;
+        --cert) TRUST_CERT_PATH="$2"; shift 2 ;;
+        --cert-type) TRUST_CERT_TYPE="$2"; shift 2 ;;
         -h|--help)
             echo "Usage: $0 [options]"
             echo "Options:"
@@ -47,6 +51,8 @@ while [[ "$#" -gt 0 ]]; do
             echo "  -x, --multi-platform Build and push for multiple architectures (linux/amd64, arm64, etc.)"
             echo "  -o, --olm            Generate and build an OLM bundle for the operator (implies -b)"
             echo "  --pull-secret <name> Add an imagePullSecret to the operator deployment"
+            echo "  --cert <path>        Inject a certificate into the trusted chain (for firewall/proxy)"
+            echo "  --cert-type <type>   Base image type: 'debian' (default) or 'rhel'"
             exit 0
             ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
@@ -106,6 +112,39 @@ cd "${OUTPUT_DIR}"
 
 ${OPERATOR_SDK} init --domain="${API_DOMAIN}" --repo="${GO_MODULE}"
 ${OPERATOR_SDK} create api --group="operator" --version="v1alpha1" --kind="KServeRawMode" --resource=true --controller=true
+
+# Handle Trusted Chain Certificate Injection
+if [ -n "$TRUST_CERT_PATH" ]; then
+    # Resolve to absolute path before any 'cd' happens
+    if [[ "$TRUST_CERT_PATH" != /* ]]; then
+        TRUST_CERT_PATH="${SCRIPT_DIR}/${TRUST_CERT_PATH}"
+    fi
+
+    if [ ! -f "$TRUST_CERT_PATH" ]; then
+        echo "ERROR: Trusted Chain Certificate file not found at '$TRUST_CERT_PATH'."
+        exit 1
+    fi
+    CERT_FILENAME=$(basename "$TRUST_CERT_PATH")
+    echo "Injecting Trusted Chain Certificate '$CERT_FILENAME' into Dockerfile..."
+    cp "$TRUST_CERT_PATH" "./$CERT_FILENAME"
+
+    if [ "$TRUST_CERT_TYPE" = "rhel" ]; then
+        CERT_DEST="/etc/pki/ca-trust/source/anchors/${CERT_FILENAME}"
+        CERT_CMD="update-ca-trust"
+    else
+        CERT_DEST="/usr/local/share/ca-certificates/${CERT_FILENAME}"
+        CERT_CMD="update-ca-certificates"
+    fi
+
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' "/FROM /a \\
+COPY ${CERT_FILENAME} ${CERT_DEST} \\
+RUN ${CERT_CMD}" Dockerfile
+    else
+        sed -i "/FROM /a COPY ${CERT_FILENAME} ${CERT_DEST}\nRUN ${CERT_CMD}" Dockerfile
+    fi
+    echo "Successfully patched Dockerfile with ${TRUST_CERT_TYPE} trusted chain logic."
+fi
 
 echo ""
 echo "[2/4] Copying KServe Extracted Manifests into Controller Assets..."
@@ -227,6 +266,28 @@ if [ "$GEN_OLM_BUNDLE" = true ]; then
     echo "Running 'make bundle IMG=${IMAGE_TAG}'..."
     make bundle IMG="${IMAGE_TAG}"
     BUNDLE_IMG="${IMAGE_TAG}-bundle"
+    
+    # Inject Trusted Chain Cert into bundle.Dockerfile if provided
+    if [ -n "$TRUST_CERT_PATH" ]; then
+        CERT_FILENAME=$(basename "$TRUST_CERT_PATH")
+        echo "Injecting Trusted Chain Certificate into bundle.Dockerfile..."
+        
+        if [ "$TRUST_CERT_TYPE" = "rhel" ]; then
+            CERT_DEST="/etc/pki/ca-trust/source/anchors/${CERT_FILENAME}"
+            CERT_CMD="update-ca-trust"
+        else
+            CERT_DEST="/usr/local/share/ca-certificates/${CERT_FILENAME}"
+            CERT_CMD="update-ca-certificates"
+        fi
+
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            sed -i '' "/FROM /a \\
+COPY ${CERT_FILENAME} ${CERT_DEST} \\
+RUN ${CERT_CMD}" bundle.Dockerfile
+        else
+            sed -i "/FROM /a COPY ${CERT_FILENAME} ${CERT_DEST}\nRUN ${CERT_CMD}" bundle.Dockerfile
+        fi
+    fi
     
     if [ "$MULTI_PLATFORM" = true ]; then
         echo "Running multi-platform bundle build for ${BUNDLE_IMG}..."

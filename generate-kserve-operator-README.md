@@ -35,6 +35,8 @@ chmod +x generate-kserve-operator.sh
 - `-x, --multi-platform` : Automatically compiles and pushes a multi-architecture image (amd64, arm64, s390x, ppc64le) using `docker-buildx`. *(Implies `-b`)*
 - `-o, --olm`            : Automatically generates and builds an Operator Lifecycle Manager (OLM) Bundle image for the registry. *(Implies `-b`)*
 - `--pull-secret <name>` : Automatically configures the operator to use an existing `imagePullSecret` to pull its own image (useful for private registries or Docker Hub rate limits).
+- `--cert <path>`        : Injects a certificate into the trusted chain of the Docker build (required for firewalls or corporate proxies).
+- `--cert-type <type>`   : Base image type for cert installation: `debian` (default) or `rhel`.
 - `-h, --help`           : Show help message
 
 ### Interactive Prompts
@@ -146,6 +148,8 @@ The tooling is registry-agnostic. To use an internal or private registry:
 ./generate-kserve-operator.sh \
   --image internal-registry.com/my-project/kserve-operator:v1 \
   --pull-secret my-internal-secret \
+  --cert ./threatpulse-ca-chain.crt \
+  --cert-type rhel \
   --olm
 ```
 
