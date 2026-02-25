@@ -132,3 +132,19 @@ When all controller pods stabilize, prove the Raw Mode installation handles Mach
 ```
 
 If you receive the prediction integer array back, your generated Operator has successfully established a fully functioning, dependency-free KServe environment on your cluster!
+
+## Using Internal Registries
+
+The tooling is registry-agnostic. To use an internal or private registry:
+
+1.  **Specify the Full URL**: Use the full registry path in the `--image` flag:
+    `--image internal-registry.com/my-project/kserve-operator:v1`
+2.  **Local Authentication**: Run `docker login internal-registry.com` on your build machine before running the script.
+3.  **Cluster Authentication**: Use the `--pull-secret` flag to specify the name of the Kubernetes `docker-registry` secret that the cluster will use to pull the images.
+
+```bash
+./generate-kserve-operator.sh \
+  --image internal-registry.com/my-project/kserve-operator:v1 \
+  --pull-secret my-internal-secret \
+  --olm
+```

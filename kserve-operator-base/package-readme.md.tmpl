@@ -7,6 +7,19 @@ This package contains the fully compiled deployment manifests required to instal
 - A functional Kubernetes Cluster (v1.24+ recommended).
 - `kubectl` installed and configured to access your cluster with ClusterAdmin privileges.
 
+## Handling Private Registries
+
+If the operator images are hosted on a private or internal registry, you must ensure the cluster has the appropriate credentials.
+
+1.  **Create a Pull Secret**: Run this command in the namespace where you plan to install the operator (default is `TARGET_DIR_NAME-system` or `default`):
+    ```bash
+    kubectl create secret docker-registry <secret-name> \
+      --docker-server=<registry-url> \
+      --docker-username=<user> \
+      --docker-password=<password>
+    ```
+2.  **Verify the Secret**: Ensure the secret name matches what was configured during the operator generation phase.
+
 ## Deployment Instructions
 
 ### Step 1: Deploy the Operator Controller
