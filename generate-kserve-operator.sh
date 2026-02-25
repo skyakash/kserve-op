@@ -21,7 +21,6 @@ MULTI_PLATFORM=false
 GEN_OLM_BUNDLE=false
 IMAGE_PULL_SECRET=""
 TRUST_CERT_PATH=""
-TRUST_CERT_TYPE="debian" # or rhel
 
 # 1. Parse CLI Arguments
 while [[ "$#" -gt 0 ]]; do
@@ -37,7 +36,6 @@ while [[ "$#" -gt 0 ]]; do
         -o|--olm) GEN_OLM_BUNDLE=true; AUTO_BUILD=true; shift 1 ;;
         --pull-secret) IMAGE_PULL_SECRET="$2"; shift 2 ;;
         --cert) TRUST_CERT_PATH="$2"; shift 2 ;;
-        --cert-type) TRUST_CERT_TYPE="$2"; shift 2 ;;
         -h|--help)
             echo "Usage: $0 [options]"
             echo "Options:"
@@ -50,9 +48,7 @@ while [[ "$#" -gt 0 ]]; do
             echo "  -p, --push           Automatically push the Docker image without prompting"
             echo "  -x, --multi-platform Build and push for multiple architectures (linux/amd64, arm64, etc.)"
             echo "  -o, --olm            Generate and build an OLM bundle for the operator (implies -b)"
-            echo "  --pull-secret <name> Add an imagePullSecret to the operator deployment"
             echo "  --cert <path>        Inject a certificate into the trusted chain (for firewall/proxy)"
-            echo "  --cert-type <type>   Base image type: 'debian' (default) or 'rhel'"
             exit 0
             ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
@@ -128,22 +124,20 @@ if [ -n "$TRUST_CERT_PATH" ]; then
     echo "Injecting Trusted Chain Certificate '$CERT_FILENAME' into Dockerfile..."
     cp "$TRUST_CERT_PATH" "./$CERT_FILENAME"
 
-    if [ "$TRUST_CERT_TYPE" = "rhel" ]; then
-        CERT_DEST="/etc/pki/ca-trust/source/anchors/${CERT_FILENAME}"
-        CERT_CMD="update-ca-trust"
-    else
-        CERT_DEST="/usr/local/share/ca-certificates/${CERT_FILENAME}"
-        CERT_CMD="update-ca-certificates"
-    fi
+    # Debian/Golang style paths and commands
+    CERT_DEST="/usr/local/share/ca-certificates/${CERT_FILENAME}"
+    CERT_CMD="update-ca-certificates"
 
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        sed -i '' "/FROM /a \\
+        # Inject ONLY into the builder stage (matches 'FROM golang')
+        sed -i '' "/FROM golang/a \\
 COPY ${CERT_FILENAME} ${CERT_DEST} \\
-RUN ${CERT_CMD}" Dockerfile
+RUN ${CERT_CMD}
+" Dockerfile
     else
-        sed -i "/FROM /a COPY ${CERT_FILENAME} ${CERT_DEST}\nRUN ${CERT_CMD}" Dockerfile
+        sed -i "/FROM golang/a COPY ${CERT_FILENAME} ${CERT_DEST}\nRUN ${CERT_CMD}" Dockerfile
     fi
-    echo "Successfully patched Dockerfile with ${TRUST_CERT_TYPE} trusted chain logic."
+    echo "Successfully patched Dockerfile build stage with trusted chain logic."
 fi
 
 echo ""
@@ -266,28 +260,6 @@ if [ "$GEN_OLM_BUNDLE" = true ]; then
     echo "Running 'make bundle IMG=${IMAGE_TAG}'..."
     make bundle IMG="${IMAGE_TAG}"
     BUNDLE_IMG="${IMAGE_TAG}-bundle"
-    
-    # Inject Trusted Chain Cert into bundle.Dockerfile if provided
-    if [ -n "$TRUST_CERT_PATH" ]; then
-        CERT_FILENAME=$(basename "$TRUST_CERT_PATH")
-        echo "Injecting Trusted Chain Certificate into bundle.Dockerfile..."
-        
-        if [ "$TRUST_CERT_TYPE" = "rhel" ]; then
-            CERT_DEST="/etc/pki/ca-trust/source/anchors/${CERT_FILENAME}"
-            CERT_CMD="update-ca-trust"
-        else
-            CERT_DEST="/usr/local/share/ca-certificates/${CERT_FILENAME}"
-            CERT_CMD="update-ca-certificates"
-        fi
-
-        if [[ "$OSTYPE" == "darwin"* ]]; then
-            sed -i '' "/FROM /a \\
-COPY ${CERT_FILENAME} ${CERT_DEST} \\
-RUN ${CERT_CMD}" bundle.Dockerfile
-        else
-            sed -i "/FROM /a COPY ${CERT_FILENAME} ${CERT_DEST}\nRUN ${CERT_CMD}" bundle.Dockerfile
-        fi
-    fi
     
     if [ "$MULTI_PLATFORM" = true ]; then
         echo "Running multi-platform bundle build for ${BUNDLE_IMG}..."
