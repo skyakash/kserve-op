@@ -290,6 +290,14 @@ else
     sed -i "s/TARGET_DIR_NAME/${TARGET_DIR_NAME}/g" "${PACKAGE_DIR}/README.md"
 fi
 
+if [ "$GEN_OLM_BUNDLE" = true ]; then
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' "s|<your-bundle-image-tag>|${IMAGE_TAG}-bundle|g" "${PACKAGE_DIR}/README.md"
+    else
+        sed -i "s|<your-bundle-image-tag>|${IMAGE_TAG}-bundle|g" "${PACKAGE_DIR}/README.md"
+    fi
+fi
+
 echo "Successfully extracted deployment manifests and created the customer package."
 
 echo ""
