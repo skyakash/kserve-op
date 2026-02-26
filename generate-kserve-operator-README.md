@@ -14,6 +14,14 @@ Before running the script, ensure you have the following installed and pre-confi
 3. **Operator SDK**: You must have `operator-sdk` (v1.33+) installed and available in your global `$PATH`, or present locally at `./tools/operator-sdk`.
 4. **Golang**: `go` must be installed (Go 1.20+) to compile the controller and manage module dependencies.
 5. **Make**: Required to run the Operator-SDK Makefile targets (`make generate`, `make manifests`).
+6. **OLM** *(only required for OLM Bundle deployment with `-o` flag)*: The Operator Lifecycle Manager must be pre-installed on your target cluster. Install it once with:
+   ```bash
+   operator-sdk olm install
+   ```
+   Verify all pods are running before proceeding:
+   ```bash
+   kubectl get pods -n olm
+   ```
 
 ## How to Run
 
@@ -39,14 +47,38 @@ chmod +x generate-kserve-operator.sh
 - `--cert <path>`        : Injects a certificate into the trusted chain of the Docker build stage (required for firewalls or corporate proxies).
 - `-h, --help`           : Show help message
 
+#### Example (from a real test run)
+
+The following command was used to generate a fully multi-platform, OLM-ready operator with a Docker Hub pull secret:
+
+```bash
+./generate-kserve-operator.sh \
+  -t p-kserve-operator \
+  -m github.com/akashdeo/p-kserve-operator \
+  -d akashdeo.com \
+  -s p-kserve-raw \
+  -i docker.io/akashneha/kserve-raw-operator:v51 \
+  --pull-secret dockerhub-creds \
+  -b -p -x -o
+```
+
+This generates:
+- **`p-kserve-operator/`** — the compiled Go operator project
+- **`p-kserve-operator-package/`** — the ready-to-deploy customer package
+
+To clean up both generated directories afterwards:
+```bash
+./generate-kserve-operator.sh -c p-kserve-operator
+```
+
 ### Interactive Prompts
 If you omit any of the required CLI flags, the script will gracefully fall back to asking you for the specific missing variables interactively:
 
-1. **Target Directory**: The name of the new folder to create (e.g., `my-kserve-operator`).
-2. **Go Module Path**: Your Go repository path (e.g., `github.com/akashdeo/my-kserve-operator`).
+1. **Target Directory**: The name of the new folder to create (e.g., `p-kserve-operator`).
+2. **Go Module Path**: Your Go repository path (e.g., `github.com/akashdeo/p-kserve-operator`).
 3. **API Domain**: The domain for your Custom Resource Group (e.g., `akashdeo.com` will result in `operator.akashdeo.com`).
-4. **Manifest Directory**: The path to your previously generated manual deployment folder (e.g., `c-kserve-raw`).
-5. **Docker Image Tag**: The target container registry path and tag for the operator image (e.g., `quay.io/akashdeo/kserve-raw-operator:v1`).
+4. **Manifest Directory**: The path to your previously generated raw manifests folder (e.g., `p-kserve-raw`).
+5. **Docker Image Tag**: The target container registry path and tag for the operator image (e.g., `docker.io/akashneha/kserve-raw-operator:v51`).
 
 ## What it Does (Under the Hood)
 
@@ -59,12 +91,16 @@ Once the parameters are provided, the script executes the following sequence aut
     - `internal/controller/apply.go`: Implements a Kubernetes **Server-Side Apply** engine to parse and apply the embedded YAML files, bypassing standard annotation size limits.
     - `internal/controller/kserverawmode_controller.go`: Writes the main reconciliation loop. This loop explicitly maps the execution order, applies the `.yaml` assets, ensures the `kserve` namespace exists for RBAC bindings, and enforces a strict `15-second` delay prior to deploying `ServingRuntimes` to prevent Webhook race conditions.
 4. **Compilation**: Automatically runs `make manifests`, `make generate`, and `go mod tidy` to ensure the DeepCopy objects, RBAC roles, and go modules are perfectly aligned.
-5. **Containerization**: If requested interactively or via the `-b / --build` flag, executes `make docker-build IMG=<image-tag>`.
-    - Note: If the `--multi-platform` flag is passed, this step shifts to `make docker-buildx`, which triggers a multi-architecture compile.
-6. **Registry Push**: If requested interactively or via the `-p / --push` flag, executes `make docker-push IMG=<image-tag>` to push your newly built container directly to your remote registry. (Auto-pushed if `--multi-platform` is used).
+5. **Containerization**: If requested via the `-b / --build` flag, executes `make docker-build IMG=<image-tag>`.
+    - Note: If the `--multi-platform` flag is passed, this step shifts to `make docker-buildx`, which triggers a multi-architecture compile and auto-push.
+6. **Registry Push**: If requested via the `-p / --push` flag, executes `make docker-push IMG=<image-tag>` to push your newly built container directly to your remote registry.
+7. **Deployment Package**: Automatically runs `kustomize build` to generate a self-contained `<target>-package/` directory with `operator-deployment.yaml` and `kserverawmode-sample.yaml` ready for immediate deployment.
 
+## Deploying the Operator
+
+Navigate into the generated project directory:
 ```bash
-cd <your-target-directory>
+cd p-kserve-operator
 ```
 
 ### Option A: Manual Cluster Deployment (Using Make)
@@ -73,58 +109,84 @@ You can interact with and deploy your custom operator to your cluster directly u
 
 ```bash
 # Deploy the Controller Manager to the cluster utilizing the image you just built
-make deploy IMG=your-registry/kserve-raw-operator:v1
+make deploy IMG=docker.io/akashneha/kserve-raw-operator:v51
 ```
 
 ### Option B: Standalone Extraction Manifests (No Make)
 
-Our automated script natively utilizes Kustomize (`make kustomize`) at the conclusion of the generation cycle to automatically precompile and output a standalone deployment payload. This means you do not need `make` or the Operator SDK available on the deployment target machine to install your operator:
+The script automatically generates a pre-compiled `<target>-package/` deployment folder. This means you do not need `make` or the Operator SDK available on the deployment target machine:
 
 ```bash
 # 1. Apply the precompiled Operator controller
-kubectl apply -f operator-deployment.yaml
+kubectl apply -f p-kserve-operator-package/operator-deployment.yaml
 
-# 2. Trigger the KServe installation loop using the sample payload
+# 2. Wait a moment then trigger the KServe installation loop using the sample CR
 sleep 5
-kubectl apply -f kserverawmode-sample.yaml
+kubectl apply -f p-kserve-operator-package/kserverawmode-sample.yaml
+
+# 3. Watch KServe pods come up
+kubectl get pods -n kserve -w
 ```
 
 ### Option C: OLM Bundle Deployment (Enterprise Ready)
 
-If you generated an OLM bundle using the `-o` flag, you can install the operator using the **Operator Lifecycle Manager**. This is the recommended approach for production clusters as it manages upgrades and dependencies automatically:
+If you generated an OLM bundle using the `-o` flag, you can install the operator using the **Operator Lifecycle Manager**. This is the recommended approach for production clusters as it manages upgrades and dependencies automatically.
+
+> [!IMPORTANT]
+> **OLM must be installed on your cluster before running the bundle.** On a fresh cluster, OLM is not present by default. Install it once:
+> ```bash
+> operator-sdk olm install
+> kubectl get pods -n olm   # Wait for all pods to be Running
+> ```
 
 ```bash
-# Deploy the bundle directly using Operator SDK
-operator-sdk run bundle <your-image-tag>-bundle
+# 1. Deploy the bundle (installs the Operator via OLM)
+operator-sdk run bundle docker.io/akashneha/kserve-raw-operator:v51-bundle
+
+# 2. Verify the CSV (ClusterServiceVersion) reached Succeeded phase
+kubectl get csv -n operators
+
+# 3. Trigger the KServe installation by applying the sample Custom Resource
+kubectl apply -f p-kserve-operator-package/kserverawmode-sample.yaml
+
+# 4. Watch KServe pods come up
+kubectl get pods -n kserve -w
 ```
 
 *Note: If you provided a `--pull-secret`, the generated OLM CSV will automatically include it, ensuring the bundle can be unpacked on clusters with pull restrictions.*
 
 ## End-to-End Validation (Testing Iris Inference)
 
-Once the `KServeRawMode` custom resource has been submitted, you can monitor the installation of KServe:
+Once the `KServeRawMode` custom resource has been submitted and KServe pods are running, you can validate the installation end-to-end using the included Iris model:
 
 ```bash
+# Verify KServe controller is healthy
 kubectl get pods -n kserve
 ```
 
-When all controller pods stabilize, prove the Raw Mode installation handles Machine Learning workloads by deploying the sample `sklearn-iris` model:
+Expected output:
+```
+NAME                                         READY   STATUS    RESTARTS   AGE
+kserve-controller-manager-7c77df7f5d-z2qlq   2/2     Running   0          70s
+```
 
-1. **Submit the InferenceService:** Assuming you ran the `generate-kserve-raw.sh` script previously, locate the included iris payload:
+When all controller pods are `Running`, deploy the sample `sklearn-iris` model:
+
+1. **Submit the InferenceService** (included in the generated package):
     ```bash
-    kubectl apply -f ../<your-raw-source-dir>/06-sample-model/sklearn-iris.yaml
+    kubectl apply -f p-kserve-operator-package/06-sample-model/sklearn-iris.yaml
     ```
-2. **Monitor the Predictor:**
+2. **Monitor the Predictor Pod:**
     ```bash
-    kubectl get pods -l serving.kserve.io/inferenceservice=sklearn-iris
+    kubectl get pods -l serving.kserve.io/inferenceservice=sklearn-iris -w
     ```
-    Once the `sklearn-iris-predictor-<hash>` pod is `Running 1/1`, the API is online.
-3. **Execute an Inference Request:** Port-forward the service to invoke the model on localhost:
+    Once the `sklearn-iris-predictor-<hash>` pod is `1/1 Running`, the API is online.
+3. **Execute an Inference Request:** Port-forward the service and invoke the model:
     ```bash
     kubectl port-forward svc/sklearn-iris-predictor 8080:80 &
-    
+
     curl -s -X POST -H "Content-Type: application/json" \
-      -d '{"instances": [[6.8, 2.8, 4.8, 1.4], [6.0, 3.4, 4.5, 1.6]]}' \
+      -d @p-kserve-operator-package/06-sample-model/iris-input.json \
       "http://localhost:8080/v1/models/sklearn-iris:predict"
     ```
 
@@ -135,22 +197,22 @@ When all controller pods stabilize, prove the Raw Mode installation handles Mach
 
 If you receive the prediction integer array back, your generated Operator has successfully established a fully functioning, dependency-free KServe environment on your cluster!
 
-## Using Internal Registries
+## Using Docker Hub with a Pull Secret
 
-The tooling is registry-agnostic. To use an internal or private registry:
-
-1.  **Specify the Full URL**: Use the full registry path in the `--image` flag:
-    `--image internal-registry.com/my-project/kserve-operator:v1`
-2.  **Local Authentication**: Run `docker login internal-registry.com` on your build machine before running the script.
-3.  **Cluster Authentication**: Use the `--pull-secret` flag to specify the name of the Kubernetes `docker-registry` secret that the cluster will use to pull the images.
+If your cluster needs a Kubernetes secret to pull images from Docker Hub (to avoid rate limits or authenticate to a private repo), use the `--pull-secret` flag when generating:
 
 ```bash
 ./generate-kserve-operator.sh \
-  --image internal-registry.com/my-project/kserve-operator:v1 \
-  --pull-secret my-internal-secret \
-  --cert ./threatpulse.crt \
-  --olm
+  -t p-kserve-operator \
+  -m github.com/akashdeo/p-kserve-operator \
+  -d akashdeo.com \
+  -s p-kserve-raw \
+  -i docker.io/akashneha/kserve-raw-operator:v51 \
+  --pull-secret dockerhub-creds \
+  -b -p -o
 ```
+
+The `dockerhub-creds` secret name will be embedded directly into the operator's pod spec and OLM CSV, so no manual patching is required after deployment.
 
 ## Handling KServe Dependencies (Mirrors)
 
@@ -161,7 +223,7 @@ If your environment blocks access to these public registries, you should:
 1.  **Mirror the Images**: Pull the official images and push them to your internal registry.
 2.  **Redirect the Manifests**: Before running `generate-kserve-operator.sh`, you can use Kustomize to redirect the source manifests in your extracted folder:
     ```bash
-    cd <extracted-raw-folder>/04-kserve-core
+    cd p-kserve-raw/04-kserve-core
     kustomize edit set image kserve/kserve-controller=internal-registry.com/mirrors/kserve-controller:v0.12.0
     ```
 3.  **ConfigMap Updates**: KServe also uses a ConfigMap (`inferenceservice-config`) to define images for predictors (sklearn, pytorch, etc.). Our automated generator preserves these references. You can manually edit the `04-kserve-core/kserve-core.yaml` to point these to your internal mirrors if required.

@@ -53,6 +53,15 @@ You can bypass the interactive prompts by supplying the target directory via the
 - `-c, --clean <name>`  : Clean the target extraction directory and exit
 - `-h, --help`          : Show help message
 
+#### Example
+```bash
+# Extract KServe manifests into a folder called 'p-kserve-raw'
+./generate-kserve-raw.sh -t p-kserve-raw
+
+# Clean up the generated folder when done
+./generate-kserve-raw.sh -c p-kserve-raw
+```
+
 ### Interactive Prompt
 If you run the script without any arguments, it will fall back to an interactive prompt:
 ```text
