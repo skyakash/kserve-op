@@ -14,16 +14,38 @@ TARGET_DIR_NAME=""
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
         -t|--target) TARGET_DIR_NAME="$2"; shift 2 ;;
+        -c|--clean) TARGET_DIR_NAME="$2"; CLEAN_ONLY=true; shift 2 ;;
         -h|--help)
             echo "Usage: $0 [options]"
             echo "Options:"
             echo "  -t, --target <name>  Target extraction directory name (e.g., c-kserve-raw)"
+            echo "  -c, --clean <name>   Clean the target extraction directory and exit"
             echo "  -h, --help           Display this help message"
             exit 0
             ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
     esac
 done
+
+SCRIPT_DIR=$(pwd)
+
+if [ "$CLEAN_ONLY" = true ]; then
+    if [ -z "$TARGET_DIR_NAME" ]; then
+        read -p "Enter the name of the target directory to clean (e.g., my-kserve-deploy): " TARGET_DIR_NAME
+    fi
+    if [ -z "$TARGET_DIR_NAME" ] || [ "$TARGET_DIR_NAME" == "/" ] || [ "$TARGET_DIR_NAME" == "." ] || [ "$TARGET_DIR_NAME" == ".." ]; then
+        echo "ERROR: Invalid target directory name for clean."
+        exit 1
+    fi
+    OUTPUT_DIR="${SCRIPT_DIR}/${TARGET_DIR_NAME}"
+    echo "Cleaning generated directories..."
+    if [ -d "${OUTPUT_DIR}" ]; then
+        echo "Removing ${OUTPUT_DIR}..."
+        rm -rf "${OUTPUT_DIR}"
+    fi
+    echo "Clean complete. Exiting..."
+    exit 0
+fi
 
 if [ -z "$TARGET_DIR_NAME" ]; then
     read -p "Enter the name of the target directory to create (e.g., my-kserve-deploy): " TARGET_DIR_NAME
@@ -34,7 +56,6 @@ if [ -z "$TARGET_DIR_NAME" ]; then
     exit 1
 fi
 
-SCRIPT_DIR=$(pwd)
 OUTPUT_DIR="${SCRIPT_DIR}/${TARGET_DIR_NAME}"
 
 # We assume kserve-master is heavily cloned right next to this script in the workspace
@@ -59,6 +80,7 @@ if [ -d "${OUTPUT_DIR}" ]; then
     echo "Directory ${OUTPUT_DIR} already exists. Cleaning it up..."
     rm -rf "${OUTPUT_DIR}"
 fi
+
 mkdir -p "${OUTPUT_DIR}"
 
 # Jump into KServe source to run localized Kustomize builds

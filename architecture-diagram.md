@@ -1,72 +1,77 @@
-# KServe Operator Architecture Diagram
+# KServe Operator Packaging Architecture
 
-The following diagram illustrates the end-to-end flow of the operator generation, build process (including firewall traversal), and cluster deployment:
+This project automates the extraction, packaging, and deployment of KServe in **Raw Deployment Mode** (without Istio/Knative dependencies). It consists of two main pipelines: extracting the manifests and wrapping them into a standalone Kubernetes Operator.
+
+## 1. High-Level Architecture Flow
 
 ```mermaid
-graph TD
-    %% Styling
-    classDef user fill:#2d3748,stroke:#4a5568,stroke-width:2px,color:#fff
-    classDef script fill:#3182ce,stroke:#2b6cb0,stroke-width:2px,color:#fff
-    classDef git fill:#dd6b20,stroke:#c05621,stroke-width:2px,color:#fff
-    classDef docker fill:#e53e3e,stroke:#c53030,stroke-width:2px,color:#fff
-    classDef k8s fill:#38a169,stroke:#2f855a,stroke-width:2px,color:#fff
-    classDef secret fill:#d69e2e,stroke:#b7791f,stroke-width:2px,color:#fff
+flowchart TD
+    classDef script fill:#f9f,stroke:#333,stroke-width:2px;
+    classDef package fill:#bbf,stroke:#333,stroke-width:1px;
+    classDef k8s fill:#dfd,stroke:#333,stroke-width:1px;
 
-    %% Components
-    subgraph SG1 [Lab Build Environment]
-        UserAction["👨‍💻 User Action"] ::: user
-        RawExtract["📂 c-kserve-raw (Extracted Manifests)"] ::: git
-        Cert["📜 cert.crt (Firewall Trusted Chain)"] ::: secret
-        DockerCreds["🔑 docker login rajeshpnhcl"] ::: secret
+    Source[("kserve-master\n(Upstream Repo)")] --> ExtractScript
+
+    subgraph Phase 1: Raw Manifest Extraction
+        ExtractScript[["1. generate-kserve-raw.sh"]]:::script
+        RawPkg["Manual Deployment Package\n(Patched for Raw Mode)"]:::package
         
-        Generator["⚙️ generate-kserve-operator.sh"] ::: script
-        
-        subgraph SG2 [Docker Build Engine]
-            GoBuilder["📦 Builder Stage (FROM golang:1.24) <br> + update-ca-certificates"] ::: docker
-            Proxy["🌐 Corporate Firewall (Deep Packet Inspection)"]
-            GoMods["📦 Go Modules (proxy.golang.org)"]
-            FinalImage["🐳 Final Operator Image (FROM distroless)"] ::: docker
-        end
+        ExtractScript -->|Extracts & Patches| RawPkg
+        Notes1>Configures inferenceservice-config\ndefaultDeploymentMode: RawDeployment] -.-> RawPkg
     end
 
-    subgraph SG3 [External Systems]
-        Registry["🐳 Docker Hub Registry (rajeshpnhcl/...)"] ::: docker
-    end
+    RawPkg -->|Provides Manifests| OperScript
 
-    subgraph SG4 [Kubernetes Target Cluster]
-        OLM["⚙️ Operator Lifecycle Manager (OLM)"] ::: k8s
-        ClusterSecrets["🔐 ImagePullSecret (dockerhub-creds)"] ::: secret
-        ControllerPod["🏃 Operator Pod (KServeRawMode Controller)"] ::: k8s
-        CRD["📄 Custom Resource (KServeRawMode)"] ::: k8s
+    subgraph Phase 2: Operator Generation
+        OperScript[["2. generate-kserve-operator.sh"]]:::script
+        OperProj["Operator SDK Project\n(Go-based Meta-Operator)"]:::package
         
-        subgraph SG5 [Target Workloads]
-            SetupSequence["🔢 KServe Raw Sequence <br> 1. Cert-Manager <br> 2. CRDs <br> 3. Webhooks <br> 4. Core Controllers <br> 5. Serving Runtimes"] ::: k8s
-            InferencePods["🚀 Running Inferences (e.g., sklearn-iris)"] ::: k8s
-        end
+        OperScript -->|Scaffolds via operator-sdk| OperProj
+        RawPkg -.->|Copied to internal/controller/assets| OperProj
     end
 
-    %% Workflows
-    UserAction -->|Executes Script| Generator
-    RawExtract -.->|Source Manifests| Generator
-    Cert -.->|Injected via --cert| Generator
-    DockerCreds -.->|Push Authentication| Generator
+    subgraph Deployment Options
+        OperProj -->|kustomize build| StandalonePkg["Standalone Operator Package\n(operator-deployment.yaml)"]:::package
+        OperProj -->|make bundle| OLMPkg["OLM Bundle\n(OperatorHub Ready)"]:::package
+        OperProj -->|make docker-build| DockerImg["Operator Container Image"]:::package
+    end
+
+    StandalonePkg --> K8sCluster
+    OLMPkg --> K8sCluster
+
+    subgraph Target Kubernetes Cluster
+        K8sCluster[("Kubernetes Cluster")]:::k8s
+        CR["KServeRawMode\n(Custom Resource)"]:::k8s
+        GoController["Operator Controller\n(Running in Pod)"]:::k8s
+        
+        K8sCluster -->|User Applies| CR
+        CR -->|Triggers| GoController
+        GoController -->|Applies embedded assets| KServeActive["Active KServe Raw\nInstallation"]:::k8s
+    end
+```
+
+## 2. Generated Operator Internal Execution
+
+The resulting generated Go Operator has the following internal structure to reconcile the KServe installation:
+
+```mermaid
+graph LR
+    User([User]) -->|kubectl apply| CR(KServeRawMode CR)
     
-    %% Generator Flow
-    Generator -->|1. Generate Go Code| GoBuilder
-    GoBuilder -->|2. Secure HTTPS connection| Proxy
-    Proxy -->|Passes SSL Check| GoMods
-    GoMods -.->|Downloads dependencies| GoBuilder
-    GoBuilder -->|3. Compile binary| FinalImage
-    FinalImage -->|4. Push Image| Registry
-
-    %% Deployment Flow
-    FinalImage -.->|5. Generate Artifacts| OLM
-    OLM -->|6. Deploy Operator| ControllerPod
-    Registry -.->|7. Pull Image| ControllerPod
-    ClusterSecrets -.->|Authenticates| ControllerPod
+    subgraph Generated Operator Pod
+        Controller(kserverawmode_controller.go)
+        Assets[(Embedded Manifests)]
+        ApplyLogic(apply.go)
+        
+        CR -.->|Reconcile Request| Controller
+        Controller -->|Read| Assets
+        Controller -->|Passes objects| ApplyLogic
+    end
     
-    %% Execution Flow
-    CRD -->|8. Apply CR| ControllerPod
-    ControllerPod -->|9. Server-Side Apply| SetupSequence
-    SetupSequence -->|10. Ready| InferencePods
+    ApplyLogic -->|Server-Side Apply| K8sAPI(Kubernetes API Server)
+    
+    K8sAPI -->|Creates| CM(cert-manager)
+    K8sAPI -->|Creates| CRDs(KServe CRDs)
+    K8sAPI -->|Creates| Core(KServe Core Controller)
+    K8sAPI -->|Creates| Runtimes(ClusterServingRuntimes)
 ```

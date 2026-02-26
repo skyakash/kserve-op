@@ -26,6 +26,7 @@ TRUST_CERT_PATH=""
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
         -t|--target) TARGET_DIR_NAME="$2"; shift 2 ;;
+        -c|--clean) TARGET_DIR_NAME="$2"; CLEAN_ONLY=true; shift 2 ;;
         -m|--module) GO_MODULE="$2"; shift 2 ;;
         -d|--domain) API_DOMAIN="$2"; shift 2 ;;
         -s|--source) MANIFEST_DIR="$2"; shift 2 ;;
@@ -40,6 +41,7 @@ while [[ "$#" -gt 0 ]]; do
             echo "Usage: $0 [options]"
             echo "Options:"
             echo "  -t, --target         Target operator directory (e.g., my-kserve-operator)"
+            echo "  -c, --clean          Clean the target operator directory and exit"
             echo "  -m, --module         Go module path (e.g., github.com/user/my-kserve-operator)"
             echo "  -d, --domain         API domain for Custom Resource (e.g., akashdeo.com)"
             echo "  -s, --source         Extracted KServe manifests folder (e.g., ./a-kserve-deploy)"
@@ -54,6 +56,32 @@ while [[ "$#" -gt 0 ]]; do
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
     esac
 done
+
+# Check if we only need to clean
+if [ "$CLEAN_ONLY" = true ]; then
+    if [ -z "$TARGET_DIR_NAME" ]; then
+        read -p "Enter the name of the target operator directory to clean (e.g., my-kserve-operator): " TARGET_DIR_NAME
+    fi
+    if [ -z "$TARGET_DIR_NAME" ] || [ "$TARGET_DIR_NAME" == "/" ] || [ "$TARGET_DIR_NAME" == "." ] || [ "$TARGET_DIR_NAME" == ".." ]; then 
+        echo "ERROR: Invalid target directory name for clean."
+        exit 1
+    fi
+    SCRIPT_DIR=$(pwd)
+    OUTPUT_DIR="${SCRIPT_DIR}/${TARGET_DIR_NAME}"
+    PACKAGE_DIR="${SCRIPT_DIR}/${TARGET_DIR_NAME}-package"
+    
+    echo "Cleaning generated directories..."
+    if [ -d "${OUTPUT_DIR}" ]; then
+        echo "Removing ${OUTPUT_DIR}..."
+        rm -rf "${OUTPUT_DIR}"
+    fi
+    if [ -d "${PACKAGE_DIR}" ]; then
+        echo "Removing ${PACKAGE_DIR}..."
+        rm -rf "${PACKAGE_DIR}"
+    fi
+    echo "Clean complete. Exiting..."
+    exit 0
+fi
 
 # 2. Gather Interactive Parameters for Missing Inputs
 if [ -z "$TARGET_DIR_NAME" ]; then
@@ -224,25 +252,27 @@ if [[ "$BUILD_CHOICE" =~ ^[Yy]$ ]]; then
             exit 1
         fi
         echo "The Operator container image '${IMAGE_TAG}' has been successfully built!"
-        
-        if [ "$AUTO_PUSH" = true ]; then
-            PUSH_CHOICE="y"
-        else
-            echo ""
-            read -p "Do you want to PUSH the newly built image to the registry '${IMAGE_TAG}'? [y/N]: " PUSH_CHOICE
-        fi
-        
-        if [[ "$PUSH_CHOICE" =~ ^[Yy]$ ]]; then
-            echo "Running 'make docker-push IMG=${IMAGE_TAG}'..."
-            if ! make docker-push IMG="${IMAGE_TAG}"; then
-                echo "ERROR: Docker push failed."
-                exit 1
-            fi
-            echo "The image has been successfully pushed!"
-        fi
     fi
 else
     echo "Skipping Docker build."
+fi
+
+if [ "$MULTI_PLATFORM" != true ] && [[ "$BUILD_CHOICE" =~ ^[Yy]$ || "$AUTO_PUSH" = true ]]; then
+    if [ "$AUTO_PUSH" = true ]; then
+        PUSH_CHOICE="y"
+    else
+        echo ""
+        read -p "Do you want to PUSH the image '${IMAGE_TAG}' to the registry? [y/N]: " PUSH_CHOICE
+    fi
+    
+    if [[ "$PUSH_CHOICE" =~ ^[Yy]$ ]]; then
+        echo "Running 'make docker-push IMG=${IMAGE_TAG}'..."
+        if ! make docker-push IMG="${IMAGE_TAG}"; then
+            echo "ERROR: Docker push failed."
+            exit 1
+        fi
+        echo "The image has been successfully pushed!"
+    fi
 fi
 
 if [ "$GEN_OLM_BUNDLE" = true ]; then
@@ -261,18 +291,30 @@ if [ "$GEN_OLM_BUNDLE" = true ]; then
     make bundle IMG="${IMAGE_TAG}"
     BUNDLE_IMG="${IMAGE_TAG}-bundle"
     
-    if [ "$MULTI_PLATFORM" = true ]; then
-        echo "Running multi-platform bundle build for ${BUNDLE_IMG}..."
-        # We use docker buildx directly as the default Makefile doesn't have bundle-buildx
-        # We need to make sure we use a canonical name if possible, but we'll stick to what user provided
-        docker buildx build --push --platform=linux/arm64,linux/amd64,linux/s390x,linux/ppc64le --tag "${BUNDLE_IMG}" -f bundle.Dockerfile .
-        echo "The multi-platform OLM Bundle image '${BUNDLE_IMG}' has been successfully built and pushed!"
+    if [[ "$BUILD_CHOICE" =~ ^[Yy]$ ]]; then
+        if [ "$MULTI_PLATFORM" = true ]; then
+            echo "Running multi-platform bundle build for ${BUNDLE_IMG}..."
+            # We use docker buildx directly as the default Makefile doesn't have bundle-buildx
+            # We need to make sure we use a canonical name if possible, but we'll stick to what user provided
+            docker buildx build --push --platform=linux/arm64,linux/amd64,linux/s390x,linux/ppc64le --tag "${BUNDLE_IMG}" -f bundle.Dockerfile .
+            echo "The multi-platform OLM Bundle image '${BUNDLE_IMG}' has been successfully built and pushed!"
+        else
+            echo "Running 'make bundle-build BUNDLE_IMG=${BUNDLE_IMG}'..."
+            make bundle-build BUNDLE_IMG="${BUNDLE_IMG}"
+            echo "The OLM Bundle image '${BUNDLE_IMG}' has been successfully built!"
+        fi
     else
-        echo "Running 'make bundle-build BUNDLE_IMG=${BUNDLE_IMG}'..."
-        make bundle-build BUNDLE_IMG="${BUNDLE_IMG}"
-        echo "The OLM Bundle image '${BUNDLE_IMG}' has been successfully built!"
+        echo "Skipping OLM Bundle image build."
+    fi
+
+    if [ "$MULTI_PLATFORM" != true ] && [[ "$BUILD_CHOICE" =~ ^[Yy]$ || "$AUTO_PUSH" = true ]]; then
+        if [ "$AUTO_PUSH" = true ]; then
+            BUNDLE_PUSH_CHOICE="y"
+        else
+            BUNDLE_PUSH_CHOICE="$PUSH_CHOICE" # Default to same choice as for main image
+        fi
         
-        if [[ "$PUSH_CHOICE" =~ ^[Yy]$ ]] || [ "$AUTO_PUSH" = true ]; then
+        if [[ "$BUNDLE_PUSH_CHOICE" =~ ^[Yy]$ ]]; then
             echo "Running 'make bundle-push BUNDLE_IMG=${BUNDLE_IMG}'..."
             make bundle-push BUNDLE_IMG="${BUNDLE_IMG}"
             echo "The OLM Bundle image has been successfully pushed!"
