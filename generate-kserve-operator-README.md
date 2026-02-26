@@ -26,6 +26,7 @@ chmod +x generate-kserve-operator.sh
 
 ### CLI Options (For CI/CD Automation)
 - `-t, --target`         : Target operator directory (e.g., `my-kserve-operator`)
+- `-c, --clean`          : Clean the target operator directory and exit
 - `-m, --module`         : Go module path (e.g., `github.com/user/my-kserve-operator`)
 - `-d, --domain`         : API domain for Custom Resource (e.g., `akashdeo.com`)
 - `-s, --source`         : Extracted KServe manifests folder (e.g., `./a-kserve-deploy`)

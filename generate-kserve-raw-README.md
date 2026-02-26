@@ -50,6 +50,7 @@ chmod +x generate-kserve-raw.sh
 You can bypass the interactive prompts by supplying the target directory via the `-t` flag. This allows you to run the script headlessly in automated pipelines:
 
 - `-t, --target <name>` : Target extraction directory name (e.g., `c-kserve-raw`)
+- `-c, --clean <name>`  : Clean the target extraction directory and exit
 - `-h, --help`          : Show help message
 
 ### Interactive Prompt
