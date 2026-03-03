@@ -36,7 +36,7 @@ This script aggressively parses a local checkout of the `kserve-master` reposito
 
 ## ⚙️ 2. KServe Standalone Operator Generator (`generate-kserve-operator.sh`)
 
-This script utilizes `operator-sdk` (v1.33+) to dynamically scaffold a custom Golang operator that can install and manage the extracted raw KServe manifests natively.
+This script utilizes `operator-sdk` (v1.42.0+) to dynamically scaffold a custom Golang operator that can install and manage the extracted raw KServe manifests natively.
 
 * **Purpose**: Compiles a production-ready Operator container image and generates a lightweight "Customer Distribution Package" containing the CRDs necessary to remotely trigger the internal KServe installation loop on a target Kubernetes cluster.
 * **Action**: Builds Golang reconcilers, maps namespaces, triggers Docker `buildx` multi-architecture compilation (amd64, arm64, s390x), and bundles the final YAML assets. 

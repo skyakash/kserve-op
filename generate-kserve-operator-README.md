@@ -11,10 +11,12 @@ Before running the script, ensure you have the following installed and pre-confi
 
 1. **Source Manifests**: You **MUST** run the `generate-kserve-raw.sh` script first to extract and compile the raw YAML files from KServe master. This script depends entirely on those cleanly split, patched directories (like `04-kserve-core`).
 2. **Template Base**: Ensure the `kserve-operator-base/` directory is located in the exact same folder as the script. This contains the pre-configured Golang source templates.
-3. **Operator SDK**: You must have `operator-sdk` (v1.33+) installed and available in your global `$PATH`, or present locally at `./tools/operator-sdk`.
-4. **Golang**: `go` must be installed (Go 1.20+) to compile the controller and manage module dependencies.
-5. **Make**: Required to run the Operator-SDK Makefile targets (`make generate`, `make manifests`).
-6. **OLM** *(only required for OLM Bundle deployment with `-o` flag)*: The Operator Lifecycle Manager must be pre-installed on your target cluster. Install it once with:
+3. **Operator SDK**: You must have `operator-sdk` (v1.42.0+) installed and available in your global `$PATH`, or present locally at `./tools/operator-sdk`.
+4. **Golang**: `go` must be installed (Go 1.26.0+) to compile the controller and manage module dependencies.
+5. **Make**: Required to run the Operator-SDK Makefile targets (`make generate`, `make manifests`). Recommended GNU Make 3.81+ or 4.x.
+6. **Docker**: `docker` must be installed (v20.10+) and running, as the script initiates `docker buildx build` for multi-architecture image compilation.
+7. **Kustomize**: (v5.0+) The script automatically downloads a localized version into `bin/kustomize`, but having it globally installed allows you to bypass the proxy download step in offline environments.
+8. **OLM** *(only required for OLM Bundle deployment with `-o` flag)*: The Operator Lifecycle Manager must be pre-installed on your target cluster. Install it once with:
    ```bash
    operator-sdk olm install
    ```

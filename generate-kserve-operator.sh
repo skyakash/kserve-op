@@ -122,7 +122,7 @@ if ! command -v operator-sdk &> /dev/null; then
         OPERATOR_SDK="${SCRIPT_DIR}/tools/operator-sdk"
     else
         echo "ERROR: operator-sdk command not found in PATH or in ${SCRIPT_DIR}/tools/"
-        echo "Please install Operator-SDK v1.33+ to proceed."
+        echo "Please install Operator-SDK v1.42.0+ to proceed."
         exit 1
     fi
 else
