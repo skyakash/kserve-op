@@ -88,7 +88,7 @@ pushd "${KSERVE_SOURCE}" > /dev/null
 
 echo "[1/5] Extracting Cert-Manager..."
 mkdir -p "${OUTPUT_DIR}/01-cert-manager"
-curl -sL "https://github.com/cert-manager/cert-manager/releases/download/v1.13.0/cert-manager.yaml" > "${OUTPUT_DIR}/01-cert-manager/cert-manager.yaml"
+curl -sLk "https://github.com/cert-manager/cert-manager/releases/download/v1.13.0/cert-manager.yaml" > "${OUTPUT_DIR}/01-cert-manager/cert-manager.yaml"
 echo "      Done."
 
 echo "[2/5] Extracting KServe CRDs..."
