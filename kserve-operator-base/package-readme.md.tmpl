@@ -190,3 +190,66 @@ Once the `kserve` namespace has populated and all controller manager pods indica
    ```
 
    **Expected Result**: `{"predictions": [1, 1]}`
+
+---
+
+## Alternative: Air-Gapped / Offline Model Test
+
+If your cluster cannot reach `gs://` (Google Cloud Storage) to download model weights, the standard `sklearn-iris` test above will fail. Use this PVC-based offline alternative instead.
+
+Detailed instructions and alternative approaches (like Custom Containers) can be found in `06-sample-model/air-gapped-examples.md`.
+
+### 1. Create a local PersistentVolumeClaim
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: offline-models-pvc
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: { requests: { storage: 1Gi } }
+EOF
+```
+
+### 2. Download and side-load the model into the PVC
+*(On a machine with internet access)*
+```bash
+curl -sL https://storage.googleapis.com/kfserving-examples/models/sklearn/1.0/model/model.joblib -o model.joblib
+
+# Mount the PVC to a temporary pod
+kubectl run model-loader --image=curlimages/curl --restart=Never --overrides='{"spec":{"volumes":[{"name":"v","persistentVolumeClaim":{"claimName":"offline-models-pvc"}}],"containers":[{"name":"model-loader","image":"curlimages/curl","command":["sleep","3600"],"volumeMounts":[{"name":"v","mountPath":"/mnt/pvc"}]}]}}'
+
+# Copy the file inside
+kubectl wait --for=condition=Ready pod/model-loader
+kubectl exec model-loader -- mkdir -p /mnt/pvc/sklearn/iris/1.0/model
+kubectl cp model.joblib default/model-loader:/mnt/pvc/sklearn/iris/1.0/model/model.joblib
+kubectl delete pod model-loader
+```
+
+### 3. Deploy the InferenceService using the PVC
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: "serving.kserve.io/v1beta1"
+kind: "InferenceService"
+metadata:
+  name: "sklearn-iris-pvc"
+  annotations:
+    serving.kserve.io/deploymentMode: "RawDeployment"
+spec:
+  predictor:
+    sklearn:
+      storageUri: "pvc://offline-models-pvc/sklearn/iris/1.0/model"
+EOF
+```
+
+### 4. Test offline inference
+```bash
+kubectl get isvc sklearn-iris-pvc -w   # wait for READY=True
+
+kubectl run --rm -i curl-test-offline --image=curlimages/curl --restart=Never -- \
+  curl -s -H "Content-Type: application/json" \
+  -d '{"instances":[[6.8,2.8,4.8,1.4]]}' \
+  http://sklearn-iris-pvc-predictor.default.svc.cluster.local/v1/models/sklearn-iris-pvc:predict
+```
+**Expected Result**: `{"predictions":[1]}`
