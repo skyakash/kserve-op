@@ -41,8 +41,22 @@ type KServeRawModeReconciler struct {
 //+kubebuilder:rbac:groups=operator.REPLACE_API_DOMAIN,resources=kserverawmodes/finalizers,verbs=update
 //+kubebuilder:rbac:groups=*,resources=*,verbs=*
 
+// setPhase persists a phase update to the status subresource.
+func (r *KServeRawModeReconciler) setPhase(ctx context.Context, instance *operatorv1alpha1.KServeRawMode, phase string) error {
+	instance.Status.Phase = phase
+	if err := r.Status().Update(ctx, instance); err != nil {
+		return fmt.Errorf("failed to update phase to %q: %w", phase, err)
+	}
+	log.FromContext(ctx).Info("Phase updated", "phase", phase)
+	return nil
+}
+
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
+//
+// The reconciler is intentionally idempotent: it re-applies all manifests on
+// every reconcile so that configuration drift is automatically corrected.
+// Server-Side Apply makes repeated application safe and cheap.
 func (r *KServeRawModeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -52,18 +66,27 @@ func (r *KServeRawModeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Just a simple state machine over Phase strings
-	if instance.Status.Phase == "Ready" {
+	// Skip if this generation has already been fully reconciled.
+	// This avoids redundant work on purely status-driven re-triggers,
+	// while still re-running when a user edits the spec.
+	if instance.Status.ObservedGeneration == instance.Generation &&
+		instance.Status.Phase == "Ready" {
+		logger.Info("Already reconciled for this generation; skipping", "generation", instance.Generation)
 		return ctrl.Result{}, nil
 	}
 
-	logger.Info("Starting installation of KServe Raw Mode")
+	logger.Info("Starting installation of KServe Raw Mode", "generation", instance.Generation)
 
 	// 1. Install cert-manager
+	if err := r.setPhase(ctx, &instance, "InstallingCertManager"); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := applyManifests(ctx, r.Client, "assets/01-cert-manager/cert-manager.yaml"); err != nil {
 		return ctrl.Result{}, err
 	}
-	waitForNamespacePodsReady(ctx, r.Client, "cert-manager")
+	if err := waitForNamespacePodsReady(ctx, r.Client, "cert-manager"); err != nil {
+		return ctrl.Result{}, fmt.Errorf("cert-manager pods not ready: %w", err)
+	}
 
 	// Create kserve namespace first, before applying CRDs or RBAC that might depend on it
 	ns := &corev1.Namespace{
@@ -75,27 +98,46 @@ func (r *KServeRawModeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// 2. Install CRDs
+	if err := r.setPhase(ctx, &instance, "InstallingCRDs"); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := applyManifests(ctx, r.Client, "assets/02-kserve-crds/kserve-crds.yaml"); err != nil {
 		return ctrl.Result{}, err
 	}
+
 	// 3. Install RBAC
+	if err := r.setPhase(ctx, &instance, "InstallingRBAC"); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := applyManifests(ctx, r.Client, "assets/03-kserve-rbac/kserve-rbac.yaml"); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	// 4. Install Core
+	if err := r.setPhase(ctx, &instance, "InstallingCore"); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := applyManifests(ctx, r.Client, "assets/04-kserve-core/kserve-core.yaml"); err != nil {
 		return ctrl.Result{}, err
 	}
-	waitForNamespacePodsReady(ctx, r.Client, "kserve") // This includes the 15-second sleep fix!
+	if err := waitForNamespacePodsReady(ctx, r.Client, "kserve"); err != nil {
+		return ctrl.Result{}, fmt.Errorf("kserve pods not ready: %w", err)
+	}
 
 	// 5. Install Runtimes
+	if err := r.setPhase(ctx, &instance, "InstallingRuntimes"); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := applyManifests(ctx, r.Client, "assets/05-kserve-runtimes/kserve-cluster-resources.yaml"); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	logger.Info("Installation successfully completed!")
+
+	// Record the generation we successfully reconciled so we don't re-run on
+	// the next status-only re-trigger.
 	instance.Status.Phase = "Ready"
+	instance.Status.ObservedGeneration = instance.Generation
 	if err := r.Status().Update(ctx, &instance); err != nil {
 		return ctrl.Result{}, err
 	}

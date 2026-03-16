@@ -27,11 +27,16 @@ type KServeRawModeSpec struct {
 // KServeRawModeStatus defines the observed state of KServeRawMode
 type KServeRawModeStatus struct {
 	// Phase indicates the current stage of installation
+	// +kubebuilder:default=""
 	Phase string `json:"phase,omitempty"`
+	// ObservedGeneration is the most recently observed generation of the KServeRawMode
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 }
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
+//+kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+//+kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // KServeRawMode is the Schema for the kserverawmodes API
 type KServeRawMode struct {

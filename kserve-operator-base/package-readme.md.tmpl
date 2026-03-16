@@ -1,5 +1,40 @@
 # KServe Operator Installation Package
 
+## ⚡ Quick Start (TL;DR)
+
+```bash
+# 1. Install OLM (once per cluster — skip if already installed)
+operator-sdk olm install && kubectl get pods -n olm
+
+# 2. Apply the operator manifests (creates the TARGET_DIR_NAME-system namespace)
+kubectl apply -f operator-deployment.yaml
+
+# 3. Set up pull credentials (only if images are on a private/rate-limited registry)
+bash setup-credentials.sh   # generated with your credentials — skip if not present
+
+# 4. Deploy the operator via OLM bundle
+operator-sdk run bundle <your-bundle-image> --pull-secret-name docker-pull-secret
+
+# 5. Install KServe by applying the Custom Resource
+kubectl apply -f kserverawmode-sample.yaml
+
+# 6. Watch progress (Ready in ~60s)
+kubectl get kserverawmode -A -w
+
+# 7. Deploy and test the Iris model
+kubectl apply -f 06-sample-model/sklearn-iris.yaml
+kubectl get isvc sklearn-iris -w   # wait for READY=True, then:
+kubectl run --rm -i curl-test --image=curlimages/curl --restart=Never -- \
+  curl -s -H "Content-Type: application/json" \
+  -d '{"instances":[[6.8,2.8,4.8,1.4]]}' \
+  http://sklearn-iris-predictor.default.svc.cluster.local/v1/models/sklearn-iris:predict
+# Expected: {"predictions":[1]}
+```
+
+> **Alternative (no OLM):** Skip steps 1 & 4. The `kubectl apply -f operator-deployment.yaml` in step 2 already installs the operator directly.
+
+---
+
 ## Overview
 This package contains the fully compiled deployment manifests required to install KServe automatically on your cluster using a custom, lightweight Operator. It operates entirely independently of Knative or Istio, utilizing Kubernetes native Deployments for inference serving workloads.
 
@@ -7,18 +42,54 @@ This package contains the fully compiled deployment manifests required to instal
 - A functional Kubernetes Cluster (v1.24+ recommended).
 - `kubectl` installed and configured to access your cluster with ClusterAdmin privileges.
 
+
 ## Handling Private Registries
 
-If the operator images are hosted on a private or internal registry, you must ensure the cluster has the appropriate credentials.
+If the operator image is hosted on a private registry (e.g. Docker Hub with auth), a pull secret must exist in a few namespaces before the operator can pull its own controller image.
 
-1.  **Create a Pull Secret**: Run this command in the namespace where you plan to install the operator (default is `TARGET_DIR_NAME-system` or `default`):
-    ```bash
-    kubectl create secret docker-registry <secret-name> \
-      --docker-server=<registry-url> \
-      --docker-username=<user> \
-      --docker-password=<password>
-    ```
-2.  **Verify the Secret**: Ensure the secret name matches what was configured during the operator generation phase.
+**Namespace lifecycle** — no manual namespace creation is needed:
+
+| Namespace | Created by |
+|---|---|
+| `default` | Always exists |
+| `TARGET_DIR_NAME-system` | `kubectl apply -f operator-deployment.yaml` |
+| `olm`, `operators` | `operator-sdk olm install` |
+| `kserve`, `cert-manager` | The operator's reconcile loop (fully automatic) |
+
+### Using `setup-credentials.sh` (if provided in this package)
+
+If this package was generated with `--docker-username` and `--docker-password`, a `setup-credentials.sh` script was created with your credentials baked in. Run it **once on your cluster** at the right moment:
+
+**For direct manifest deploy:**
+```bash
+kubectl apply -f operator-deployment.yaml   # creates TARGET_DIR_NAME-system namespace
+bash setup-credentials.sh                   # creates pull secret in all namespaces
+kubectl apply -f kserverawmode-sample.yaml
+```
+
+**For OLM bundle deploy:**
+```bash
+operator-sdk olm install                    # creates olm + operators namespaces
+bash setup-credentials.sh                   # creates pull secret in all namespaces
+operator-sdk run bundle <your-bundle-image> --pull-secret-name docker-pull-secret
+kubectl apply -f kserverawmode-sample.yaml
+```
+
+### Manual pull secret creation (without setup-credentials.sh)
+
+If `setup-credentials.sh` was not generated, create the secret manually:
+```bash
+for ns in default TARGET_DIR_NAME-system olm operators; do
+  kubectl get ns $ns &>/dev/null || continue   # skip namespaces that don't exist yet
+  kubectl create secret docker-registry docker-pull-secret \
+    --docker-server=<registry> \
+    --docker-username=<user> \
+    --docker-password=<token> \
+    --namespace=$ns \
+    --dry-run=client -o yaml | kubectl apply -f -
+done
+```
+
 
 ## Deployment Instructions
 
@@ -34,9 +105,17 @@ kubectl apply -f operator-deployment.yaml
 
 #### Option B: OLM Bundle (Enterprise Recommended)
 If you have Operator Lifecycle Manager installed, you can deploy the operator as a bundle. This manages upgrades and dependencies automatically.
+
+> [!IMPORTANT]
+> OLM must be pre-installed. If not present: `operator-sdk olm install`
+
+> [!TIP]
+> The bundle image is built with `--provenance=false --sbom=false` to produce a flat single-manifest image that OLM can pull on both `linux/amd64` and `linux/arm64` hosts without platform resolution errors.
+
 ```bash
-# Run the bundle directly
-operator-sdk run bundle <your-bundle-image-tag>
+# Run the bundle (pass your pull secret if images are on a private registry)
+operator-sdk run bundle <your-bundle-image-tag> \
+  --pull-secret-name docker-pull-secret
 ```
 
 ---
@@ -46,30 +125,37 @@ operator-sdk run bundle <your-bundle-image-tag>
 Once the operator is running, submit the Custom Resource to trigger the KServe component installation (Namespace, RBAC, Core Controllers, and Runtimes).
 
 ```bash
+# Wait for the operator pod to be ready first
+kubectl rollout status deployment -n TARGET_DIR_NAME-system --timeout=120s
+
+# Then submit the CR to begin KServe installation
 kubectl apply -f kserverawmode-sample.yaml
 ```
 
 ---
 
-### Step 3: Wait for System Readiness
-Wait for the Operator to finish orchestrating the KServe and cert-manager components.
-   ```bash
-   # Wait for the Operators internal reconciliation loop to generate the Pods
-   sleep 10
-   
-   kubectl wait --for=condition=ready pod -l control-plane=kserve-controller-manager -n kserve --timeout=300s
-   
-   # Allow networking logic to map the webhook service endpoints (prevents 'connection refused')
-   sleep 15
-   ```
+### Step 3: Monitor Install Progress
 
-#### 4. Verify System Status
-Before proceeding to inference, quickly verify that all KServe system components have properly initialized:
+The operator progresses through granular phases — no manual `sleep` commands needed. Watch in real time:
+
 ```bash
-# Verify KServe Controller Manager Pods
-kubectl get pods -n kserve
+kubectl get kserverawmode -A -w
+```
 
-# Verify InferenceService Custom Resource Definitions exist
+Expected output:
+```
+NAMESPACE   NAME                   PHASE                   AGE
+default     kserverawmode-sample   InstallingCertManager   5s
+default     kserverawmode-sample   InstallingCRDs          25s
+default     kserverawmode-sample   InstallingRBAC          27s
+default     kserverawmode-sample   InstallingCore          28s
+default     kserverawmode-sample   InstallingRuntimes      55s
+default     kserverawmode-sample   Ready                   60s
+```
+
+Once `Ready`, verify all KServe system components are up:
+```bash
+kubectl get pods -n kserve
 kubectl get crd | grep kserve
 ```
 
@@ -88,11 +174,19 @@ Once the `kserve` namespace has populated and all controller manager pods indica
    ```
    Wait until the `sklearn-iris-predictor-<hash>` pod is `Running (1/1)`.
 
-3. **Test Inference**: Port-forward the model service and submit the input payload.
+3. **Test Inference**: Either port-forward or use an in-cluster curl pod:
    ```bash
+   # Option A: port-forward
    kubectl port-forward svc/sklearn-iris-predictor 8080:80 &
-   
-   curl -s -X POST -H "Content-Type: application/json" -d @06-sample-model/iris-input.json "http://localhost:8080/v1/models/sklearn-iris:predict"
+   curl -s -X POST -H "Content-Type: application/json" \
+     -d @06-sample-model/iris-input.json \
+     "http://localhost:8080/v1/models/sklearn-iris:predict"
+
+   # Option B: in-cluster (no port-forward needed)
+   kubectl run --rm -i curl-test --image=curlimages/curl --restart=Never -- \
+     curl -s -H "Content-Type: application/json" \
+     -d '{"instances":[[6.8,2.8,4.8,1.4]]}' \
+     http://sklearn-iris-predictor.default.svc.cluster.local/v1/models/sklearn-iris:predict
    ```
-   
+
    **Expected Result**: `{"predictions": [1, 1]}`

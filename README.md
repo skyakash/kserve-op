@@ -62,4 +62,40 @@ This script utilizes `operator-sdk` (v1.42.0+) to dynamically scaffold a custom 
 
 1. **Clone** the official `kserve` repository directly into this workspace (`./kserve-master`).
 2. **Execute** `generate-kserve-raw.sh` to extract and configure the standalone YAML configuration.
+   ```bash
+   ./generate-kserve-raw.sh -t p-kserve-raw
+   ```
 3. **Execute** `generate-kserve-operator.sh` against the extracted folder to compile the final Go-based Kubernetes Operator and generate the redistributable installer bundle.
+   ```bash
+   ./generate-kserve-operator.sh \
+     -t p-kserve-operator \
+     -m github.com/your-org/my-kserve-operator \
+     -d your.domain.com \
+     -s p-kserve-raw \
+     -i docker.io/your-org/kserve-raw-operator:v1 \
+     -b -p
+   ```
+4. **Deploy** the generated package to your cluster:
+   ```bash
+   # Option A: Direct manifests
+   kubectl apply -f p-kserve-operator-package/operator-deployment.yaml
+   kubectl apply -f p-kserve-operator-package/kserverawmode-sample.yaml
+
+   # Option B: OLM bundle (requires OLM pre-installed)
+   operator-sdk run bundle docker.io/your-org/kserve-raw-operator:v1-bundle \
+     --pull-secret-name docker-pull-secret
+   kubectl apply -f p-kserve-operator-package/kserverawmode-sample.yaml
+   ```
+5. **Monitor** the installation progress and **validate** the Iris inference model:
+   ```bash
+   # Watch phase progression (no manual sleep needed)
+   kubectl get kserverawmode -A -w
+
+   # Once Ready, deploy and test the sample model
+   kubectl apply -f p-kserve-operator-package/06-sample-model/sklearn-iris.yaml
+   kubectl port-forward svc/sklearn-iris-predictor 8080:80 &
+   curl -s -H 'Content-Type: application/json' \
+     -d '{"instances":[[6.8,2.8,4.8,1.4]]}' \
+     http://localhost:8080/v1/models/sklearn-iris:predict
+   # Expected: {"predictions":[1]}
+   ```

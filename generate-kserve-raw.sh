@@ -140,6 +140,7 @@ echo "---" >> "${OUTPUT_DIR}/04-kserve-core/kserve-core-temp.yaml"
 ${KUSTOMIZE} build config/certmanager >> "${OUTPUT_DIR}/04-kserve-core/kserve-core-temp.yaml"
 
 # CRITICAL: We must modify the inferenceservice-config ConfigMap inline to force RawDeployment mode
+# and remove all Istio/KNative references from the ingress config.
 python3 -c '
 import yaml
 import json
@@ -150,10 +151,22 @@ with open(sys.argv[1], "r") as f:
     docs = yaml.safe_load_all(f)
     for doc in docs:
         if doc and doc.get("kind") == "ConfigMap" and doc.get("metadata", {}).get("name") == "inferenceservice-config":
+            # Force RawDeployment mode
             if "deploy" in doc.get("data", {}):
                 deploy_cfg = json.loads(doc["data"]["deploy"])
                 deploy_cfg["defaultDeploymentMode"] = "RawDeployment"
                 doc["data"]["deploy"] = json.dumps(deploy_cfg, indent=4)
+
+            # Patch ingress: disable Istio VirtualService creation and clear ingressClassName
+            # NOTE: gateway fields (ingressGateway, localGateway, etc.) cannot be removed
+            # because KServe validates their presence at startup.
+            if "ingress" in doc.get("data", {}):
+                ingress_cfg = json.loads(doc["data"]["ingress"])
+                ingress_cfg["disableIstioVirtualHost"] = True
+                ingress_cfg["ingressClassName"] = ""
+                ingress_cfg["disableIngressCreation"] = True
+                doc["data"]["ingress"] = json.dumps(ingress_cfg, indent=4)
+
         output.append(doc)
 
 with open(sys.argv[2], "w") as f:

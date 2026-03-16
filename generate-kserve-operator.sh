@@ -20,6 +20,9 @@ AUTO_PUSH=false
 MULTI_PLATFORM=false
 GEN_OLM_BUNDLE=false
 IMAGE_PULL_SECRET=""
+DOCKER_SERVER="docker.io"
+DOCKER_USERNAME=""
+DOCKER_PASSWORD=""
 TRUST_CERT_PATH=""
 
 # 1. Parse CLI Arguments
@@ -36,6 +39,9 @@ while [[ "$#" -gt 0 ]]; do
         -x|--multi-platform) MULTI_PLATFORM=true; AUTO_BUILD=true; shift 1 ;;
         -o|--olm) GEN_OLM_BUNDLE=true; AUTO_BUILD=true; shift 1 ;;
         --pull-secret) IMAGE_PULL_SECRET="$2"; shift 2 ;;
+        --docker-server) DOCKER_SERVER="$2"; shift 2 ;;
+        --docker-username) DOCKER_USERNAME="$2"; shift 2 ;;
+        --docker-password) DOCKER_PASSWORD="$2"; shift 2 ;;
         --cert) TRUST_CERT_PATH="$2"; shift 2 ;;
         -h|--help)
             echo "Usage: $0 [options]"
@@ -50,6 +56,10 @@ while [[ "$#" -gt 0 ]]; do
             echo "  -p, --push           Automatically push the Docker image without prompting"
             echo "  -x, --multi-platform Build and push for multiple architectures (linux/amd64, arm64, etc.)"
             echo "  -o, --olm            Generate and build an OLM bundle for the operator (implies -b)"
+            echo "  --pull-secret <name> Name of an existing imagePullSecret on the cluster (injected into manager spec)"
+            echo "  --docker-server <url>  Registry URL for pull secret creation (default: docker.io)"
+            echo "  --docker-username <u>  Registry username — generates setup-credentials.sh in the package"
+            echo "  --docker-password <p>  Registry password/token — generates setup-credentials.sh in the package"
             echo "  --cert <path>        Inject a certificate into the trusted chain (for firewall/proxy)"
             exit 0
             ;;
@@ -299,27 +309,38 @@ if [ "$GEN_OLM_BUNDLE" = true ]; then
             docker buildx build --push --platform=linux/arm64,linux/amd64,linux/s390x,linux/ppc64le --tag "${BUNDLE_IMG}" -f bundle.Dockerfile .
             echo "The multi-platform OLM Bundle image '${BUNDLE_IMG}' has been successfully built and pushed!"
         else
-            echo "Running 'make bundle-build BUNDLE_IMG=${BUNDLE_IMG}'..."
-            make bundle-build BUNDLE_IMG="${BUNDLE_IMG}"
-            echo "The OLM Bundle image '${BUNDLE_IMG}' has been successfully built!"
+            echo "Running OLM-compatible bundle build for ${BUNDLE_IMG}..."
+            # Detect the host architecture and normalise to a Docker platform string.
+            # This is critical: 'docker build' (and 'make bundle-build') produce a manifest LIST
+            # with BuildKit attestation data that OLM's containers/image cannot resolve to a platform.
+            # Using 'docker buildx --provenance=false --sbom=false' emits a flat single-manifest image
+            # that OLM accepts on both linux/amd64 (x86_64) and linux/arm64 (aarch64) hosts.
+            HOST_ARCH=$(uname -m)
+            case "${HOST_ARCH}" in
+                x86_64)  BUNDLE_PLATFORM="linux/amd64" ;;
+                aarch64) BUNDLE_PLATFORM="linux/arm64" ;;
+                arm64)   BUNDLE_PLATFORM="linux/arm64" ;;
+                *)       BUNDLE_PLATFORM="linux/${HOST_ARCH}" ;;
+            esac
+            echo "Detected host architecture: ${HOST_ARCH} → building for ${BUNDLE_PLATFORM}"
+            if ! docker buildx build \
+                --platform "${BUNDLE_PLATFORM}" \
+                --provenance=false \
+                --sbom=false \
+                --push \
+                -f bundle.Dockerfile \
+                -t "${BUNDLE_IMG}" .; then
+                echo "ERROR: OLM Bundle build failed."
+                exit 1
+            fi
+            echo "The OLM Bundle image '${BUNDLE_IMG}' has been successfully built and pushed!"
         fi
     else
         echo "Skipping OLM Bundle image build."
     fi
 
-    if [ "$MULTI_PLATFORM" != true ] && [[ "$BUILD_CHOICE" =~ ^[Yy]$ || "$AUTO_PUSH" = true ]]; then
-        if [ "$AUTO_PUSH" = true ]; then
-            BUNDLE_PUSH_CHOICE="y"
-        else
-            BUNDLE_PUSH_CHOICE="$PUSH_CHOICE" # Default to same choice as for main image
-        fi
-        
-        if [[ "$BUNDLE_PUSH_CHOICE" =~ ^[Yy]$ ]]; then
-            echo "Running 'make bundle-push BUNDLE_IMG=${BUNDLE_IMG}'..."
-            make bundle-push BUNDLE_IMG="${BUNDLE_IMG}"
-            echo "The OLM Bundle image has been successfully pushed!"
-        fi
-    fi
+    # Note: For single-platform OLM builds, the docker buildx --push above already pushed the image.
+    # The separate bundle-push step is only needed for non-push local multi-platform builds (not used here).
 fi
 
 echo ""
@@ -363,6 +384,85 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
     sed -i '' "s/TARGET_DIR_NAME/${TARGET_DIR_NAME}/g" "${PACKAGE_DIR}/README.md"
 else
     sed -i "s/TARGET_DIR_NAME/${TARGET_DIR_NAME}/g" "${PACKAGE_DIR}/README.md"
+fi
+
+# Generate setup-credentials.sh if docker credentials were provided.
+# This script is meant to be run ONCE on the cluster BEFORE deploying the operator.
+# It creates the imagePullSecret in all namespaces that need it.
+# Namespaces are created by: default (always exists), p-kserve-operator-system (by operator-deployment.yaml),
+# olm/operators (by 'operator-sdk olm install'), kserve/cert-manager (by the operator's reconcile loop).
+if [ -n "${DOCKER_USERNAME}" ] && [ -n "${DOCKER_PASSWORD}" ]; then
+    SECRET_NAME="${IMAGE_PULL_SECRET:-docker-pull-secret}"
+    cat > "${PACKAGE_DIR}/setup-credentials.sh" << EOF
+#!/bin/bash
+# =============================================================================
+# setup-credentials.sh — Create registry pull secrets on the cluster
+#
+# Run this ONCE before deploying the operator. It creates the pull secret
+# in all namespaces that need it at the time of first install.
+#
+# Namespace lifecycle:
+#   default                      — always exists
+#   ${TARGET_DIR_NAME}-system    — created by: kubectl apply -f operator-deployment.yaml
+#   olm, operators               — created by: operator-sdk olm install
+#   kserve, cert-manager         — created by: the operator's reconcile loop (auto)
+#
+# USAGE:
+#   For direct manifest deploy:
+#     1. kubectl apply -f operator-deployment.yaml   (creates ${TARGET_DIR_NAME}-system)
+#     2. bash setup-credentials.sh
+#     3. kubectl apply -f kserverawmode-sample.yaml
+#
+#   For OLM bundle deploy:
+#     1. operator-sdk olm install                    (creates olm, operators)
+#     2. bash setup-credentials.sh
+#     3. operator-sdk run bundle <your-bundle-image> --pull-secret-name ${SECRET_NAME}
+#     4. kubectl apply -f kserverawmode-sample.yaml
+# =============================================================================
+
+set -e
+
+SECRET_NAME="${SECRET_NAME}"
+DOCKER_SERVER="${DOCKER_SERVER}"
+DOCKER_USERNAME="${DOCKER_USERNAME}"
+DOCKER_PASSWORD="${DOCKER_PASSWORD}"
+
+create_secret() {
+    local ns=\$1
+    echo "Creating pull secret '\${SECRET_NAME}' in namespace '\${ns}'..."
+    kubectl create secret docker-registry "\${SECRET_NAME}" \\
+        --docker-server="\${DOCKER_SERVER}" \\
+        --docker-username="\${DOCKER_USERNAME}" \\
+        --docker-password="\${DOCKER_PASSWORD}" \\
+        --namespace="\${ns}" \\
+        --dry-run=client -o yaml | kubectl apply -f -
+}
+
+# Always-available namespaces
+create_secret default
+
+# Operator system namespace — created by operator-deployment.yaml
+if kubectl get ns ${TARGET_DIR_NAME}-system &>/dev/null; then
+    create_secret ${TARGET_DIR_NAME}-system
+else
+    echo "Namespace '${TARGET_DIR_NAME}-system' not found — apply operator-deployment.yaml first, then re-run this script."
+fi
+
+# OLM namespaces — created by 'operator-sdk olm install'
+for ns in olm operators; do
+    if kubectl get ns \${ns} &>/dev/null; then
+        create_secret \${ns}
+    else
+        echo "Namespace '\${ns}' not found — run 'operator-sdk olm install' first if using OLM."
+    fi
+done
+
+echo ""
+echo "Pull secret '\${SECRET_NAME}' configured. Namespaces kserve and cert-manager"
+echo "will be created automatically by the operator reconcile loop — no action needed."
+EOF
+    chmod +x "${PACKAGE_DIR}/setup-credentials.sh"
+    echo "Generated setup-credentials.sh in the customer package (run this on your cluster before deploying)."
 fi
 
 if [ "$GEN_OLM_BUNDLE" = true ]; then

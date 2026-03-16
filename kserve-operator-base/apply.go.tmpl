@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/yaml"
@@ -51,12 +52,12 @@ func applyManifests(ctx context.Context, c client.Client, path string) error {
 		// Inject the requested target namespace for objects that missed it during kustomization build
 		if obj.GetNamespace() == "" {
 			kind := obj.GetKind()
-			isClusterScoped := kind == "Namespace" || 
-				kind == "CustomResourceDefinition" || 
+			isClusterScoped := kind == "Namespace" ||
+				kind == "CustomResourceDefinition" ||
 				kind == "APIService" ||
-				strings.HasPrefix(kind, "Cluster") || 
+				strings.HasPrefix(kind, "Cluster") ||
 				strings.HasSuffix(kind, "WebhookConfiguration")
-			
+
 			if !isClusterScoped {
 				// Default namespace-scoped components missing declarations to 'kserve'
 				obj.SetNamespace("kserve")
@@ -73,13 +74,64 @@ func applyManifests(ctx context.Context, c client.Client, path string) error {
 	return nil
 }
 
-// waitForNamespacePodsReady checks if all pods in the given namespace are ready.
-// It will retry until the context cancels or the pods are ready.
+// waitForNamespacePodsReady polls until all pods in the given namespace are Ready,
+// or until the context deadline is exceeded. It retries every 5 seconds and
+// returns an error (prompting the reconciler to requeue) if pods are still not
+// ready after 5 minutes.
 func waitForNamespacePodsReady(ctx context.Context, c client.Client, namespace string) error {
 	logger := log.FromContext(ctx)
-	logger.Info("Waiting 15 seconds for Service/Webhook propagation", "namespace", namespace)
+	logger.Info("Waiting for pods to be ready", "namespace", namespace)
 
-	// Since we are writing a simple operator, we'll delay explicitly briefly for webhook registry just to mirror our script.
-	time.Sleep(15 * time.Second)
-	return nil
+	timeout := time.After(5 * time.Minute)
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("context cancelled while waiting for pods in namespace %q: %w", namespace, ctx.Err())
+		case <-timeout:
+			return fmt.Errorf("timed out waiting for pods in namespace %q to become ready", namespace)
+		case <-ticker.C:
+			podList := &corev1.PodList{}
+			if err := c.List(ctx, podList, client.InNamespace(namespace)); err != nil {
+				logger.Error(err, "Failed to list pods; will retry", "namespace", namespace)
+				continue
+			}
+
+			if len(podList.Items) == 0 {
+				logger.Info("No pods yet; waiting", "namespace", namespace)
+				continue
+			}
+
+			allReady := true
+			for i := range podList.Items {
+				pod := &podList.Items[i]
+				// Skip completed/succeeded pods (e.g. one-shot Jobs)
+				if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+					continue
+				}
+				if !isPodReady(pod) {
+					logger.Info("Pod not yet ready", "pod", pod.Name, "namespace", namespace)
+					allReady = false
+					break
+				}
+			}
+
+			if allReady {
+				logger.Info("All pods ready", "namespace", namespace)
+				return nil
+			}
+		}
+	}
+}
+
+// isPodReady returns true if the pod has a Ready condition with Status=True.
+func isPodReady(pod *corev1.Pod) bool {
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == corev1.PodReady {
+			return cond.Status == corev1.ConditionTrue
+		}
+	}
+	return false
 }

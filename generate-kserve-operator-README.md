@@ -45,7 +45,10 @@ chmod +x generate-kserve-operator.sh
 - `-p, --push`           : Automatically push the Docker image without prompting
 - `-x, --multi-platform` : Automatically compiles and pushes a multi-architecture image (amd64, arm64, s390x, ppc64le) using `docker-buildx`. *(Implies `-b`)*
 - `-o, --olm`            : Automatically generates and builds an Operator Lifecycle Manager (OLM) Bundle image for the registry. *(Implies `-b`)*
-- `--pull-secret <name>` : Automatically configures the operator to use an existing `imagePullSecret` to pull its own image (useful for private registries or Docker Hub rate limits).
+- `--pull-secret <name>` : Name of an existing `imagePullSecret` on the cluster (injected into the operator pod spec)
+- `--docker-server <url>` : Registry server URL for pull secret creation (default: `docker.io`)
+- `--docker-username <u>` : Registry username — when set, generates `setup-credentials.sh` in the output package
+- `--docker-password <p>` : Registry password or access token — used alongside `--docker-username`
 - `--cert <path>`        : Injects a certificate into the trusted chain of the Docker build stage (required for firewalls or corporate proxies).
 - `-h, --help`           : Show help message
 
@@ -59,9 +62,12 @@ The following command was used to generate a fully multi-platform, OLM-ready ope
   -m github.com/akashdeo/p-kserve-operator \
   -d akashdeo.com \
   -s p-kserve-raw \
-  -i docker.io/akashneha/kserve-raw-operator:v51 \
-  --pull-secret dockerhub-creds \
-  -b -p -x -o
+  -i docker.io/akashneha/kserve-raw-operator:v152 \
+  --docker-server docker.io \
+  --docker-username akashneha \
+  --docker-password dckr_pat_xxx \
+  --pull-secret docker-pull-secret \
+  -b -p -o
 ```
 
 This generates:
@@ -80,7 +86,7 @@ If you omit any of the required CLI flags, the script will gracefully fall back 
 2. **Go Module Path**: Your Go repository path (e.g., `github.com/akashdeo/p-kserve-operator`).
 3. **API Domain**: The domain for your Custom Resource Group (e.g., `akashdeo.com` will result in `operator.akashdeo.com`).
 4. **Manifest Directory**: The path to your previously generated raw manifests folder (e.g., `p-kserve-raw`).
-5. **Docker Image Tag**: The target container registry path and tag for the operator image (e.g., `docker.io/akashneha/kserve-raw-operator:v51`).
+5. **Docker Image Tag**: The target container registry path and tag for the operator image (e.g., `docker.io/akashneha/kserve-raw-operator:v152`).
 
 ## What it Does (Under the Hood)
 
@@ -91,7 +97,7 @@ Once the parameters are provided, the script executes the following sequence aut
 3. **Code Templating**: Dynamically copies the `.tmpl` files from the `kserve-operator-base/` directory and injects your CLI variables via `sed`, creating three crucial Go files:
     - `api/.../kserverawmode_types.go`: Defines the Custom Resource schema (`KServeRawMode`).
     - `internal/controller/apply.go`: Implements a Kubernetes **Server-Side Apply** engine to parse and apply the embedded YAML files, bypassing standard annotation size limits.
-    - `internal/controller/kserverawmode_controller.go`: Writes the main reconciliation loop. This loop explicitly maps the execution order, applies the `.yaml` assets, ensures the `kserve` namespace exists for RBAC bindings, and enforces a strict `15-second` delay prior to deploying `ServingRuntimes` to prevent Webhook race conditions.
+    - `internal/controller/kserverawmode_controller.go`: Writes the main reconciliation loop. This loop explicitly maps the execution order, applies the `.yaml` assets, ensures the `kserve` namespace exists for RBAC bindings, and **polls for real pod readiness** (5-second retries, 5-minute timeout) before deploying `ServingRuntimes` to prevent Webhook race conditions. The reconciler is **idempotent** — it re-applies manifests on every spec change, using `ObservedGeneration` to avoid unnecessary reconciles.
 4. **Compilation**: Automatically runs `make manifests`, `make generate`, and `go mod tidy` to ensure the DeepCopy objects, RBAC roles, and go modules are perfectly aligned.
 5. **Containerization**: If requested via the `-b / --build` flag, executes `make docker-build IMG=<image-tag>`.
     - Note: If the `--multi-platform` flag is passed, this step shifts to `make docker-buildx`, which triggers a multi-architecture compile and auto-push.
@@ -111,7 +117,7 @@ You can interact with and deploy your custom operator to your cluster directly u
 
 ```bash
 # Deploy the Controller Manager to the cluster utilizing the image you just built
-make deploy IMG=docker.io/akashneha/kserve-raw-operator:v51
+make deploy IMG=docker.io/akashneha/kserve-raw-operator:v152
 ```
 
 ### Option B: Standalone Extraction Manifests (No Make)
@@ -122,12 +128,14 @@ The script automatically generates a pre-compiled `<target>-package/` deployment
 # 1. Apply the precompiled Operator controller
 kubectl apply -f p-kserve-operator-package/operator-deployment.yaml
 
-# 2. Wait a moment then trigger the KServe installation loop using the sample CR
-sleep 5
+# 2. Wait for the operator pod to be ready before submitting the CR
+kubectl rollout status deployment -n p-kserve-operator-system --timeout=120s
+
+# 3. Trigger the KServe installation loop using the sample CR
 kubectl apply -f p-kserve-operator-package/kserverawmode-sample.yaml
 
-# 3. Watch KServe pods come up
-kubectl get pods -n kserve -w
+# 4. Watch the installation phase progress
+kubectl get kserverawmode -A -w
 ```
 
 ### Option C: OLM Bundle Deployment (Enterprise Ready)
@@ -141,21 +149,54 @@ If you generated an OLM bundle using the `-o` flag, you can install the operator
 > kubectl get pods -n olm   # Wait for all pods to be Running
 > ```
 
-```bash
-# 1. Deploy the bundle (installs the Operator via OLM)
-operator-sdk run bundle docker.io/akashneha/kserve-raw-operator:v51-bundle
+> [!TIP]
+> **OLM Platform Compatibility**: The script uses `docker buildx build --provenance=false --sbom=false` when building the bundle image. This produces a flat single-manifest image (auto-detecting your host arch via `uname -m`). Without these flags, Docker BuildKit adds attestation manifests that create a multi-arch manifest list which OLM's image unpacker cannot resolve. This works correctly on both `linux/amd64` (x86_64) and `linux/arm64` (aarch64) hosts.
 
-# 2. Verify the CSV (ClusterServiceVersion) reached Succeeded phase
+```bash
+# 1. Create a pull secret in the default namespace so OLM can pull the bundle image
+kubectl create secret docker-registry docker-pull-secret \
+  --docker-server=docker.io \
+  --docker-username=<your-username> \
+  --docker-password=<your-token>
+
+# 2. Deploy the bundle (installs the Operator via OLM)
+operator-sdk run bundle docker.io/akashneha/kserve-raw-operator:v152-bundle \
+  --pull-secret-name docker-pull-secret
+
+# 3. Verify the CSV (ClusterServiceVersion) reached Succeeded phase
 kubectl get csv -n operators
 
-# 3. Trigger the KServe installation by applying the sample Custom Resource
+# 4. Trigger the KServe installation by applying the sample Custom Resource
 kubectl apply -f p-kserve-operator-package/kserverawmode-sample.yaml
 
-# 4. Watch KServe pods come up
+# 5. Watch KServe pods come up
 kubectl get pods -n kserve -w
 ```
 
-*Note: If you provided a `--pull-secret`, the generated OLM CSV will automatically include it, ensuring the bundle can be unpacked on clusters with pull restrictions.*
+*Note: If you provided a `--pull-secret` during generation, the generated OLM CSV will automatically include it, ensuring the bundle can be unpacked on clusters with pull restrictions.*
+
+## Monitoring Install Progress
+
+Once you submit the `KServeRawMode` CR, the operator progresses through granular phases you can watch in real time:
+
+```bash
+kubectl get kserverawmode -A -w
+```
+
+Expected output:
+```
+NAMESPACE   NAME                   PHASE                   AGE
+default     kserverawmode-sample   InstallingCertManager   5s
+default     kserverawmode-sample   InstallingCRDs          25s
+default     kserverawmode-sample   InstallingRBAC          27s
+default     kserverawmode-sample   InstallingCore          28s
+default     kserverawmode-sample   InstallingRuntimes      55s
+default     kserverawmode-sample   Ready                   60s
+```
+
+The operator polls for real pod readiness at each stage — no manual `sleep` commands needed.
+
+---
 
 ## End-to-End Validation (Testing Iris Inference)
 
@@ -192,6 +233,14 @@ When all controller pods are `Running`, deploy the sample `sklearn-iris` model:
       "http://localhost:8080/v1/models/sklearn-iris:predict"
     ```
 
+    **Alternative (in-cluster, no port-forward needed):**
+    ```bash
+    kubectl run --rm -i curl-test --image=curlimages/curl --restart=Never -- \
+      curl -s -H "Content-Type: application/json" \
+      -d '{"instances":[[6.8,2.8,4.8,1.4]]}' \
+      http://sklearn-iris-predictor.default.svc.cluster.local/v1/models/sklearn-iris:predict
+    ```
+
 **Expected Result:**
 ```json
 {"predictions": [1, 1]}
@@ -209,7 +258,7 @@ If your cluster needs a Kubernetes secret to pull images from Docker Hub (to avo
   -m github.com/akashdeo/p-kserve-operator \
   -d akashdeo.com \
   -s p-kserve-raw \
-  -i docker.io/akashneha/kserve-raw-operator:v51 \
+  -i docker.io/akashneha/kserve-raw-operator:v152 \
   --pull-secret dockerhub-creds \
   -b -p -o
 ```
