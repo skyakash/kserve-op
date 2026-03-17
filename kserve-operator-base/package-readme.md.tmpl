@@ -6,22 +6,17 @@
 # 1. Install OLM (once per cluster — skip if already installed)
 operator-sdk olm install && kubectl get pods -n olm
 
-# 2. Apply the operator manifests (creates the TARGET_DIR_NAME-system namespace)
-kubectl apply -f operator-deployment.yaml
-
-# 3. Set up pull credentials (only if images are on a private/rate-limited registry)
+# 2. Set up pull credentials (only if images are on a private/rate-limited registry)
 bash setup-credentials.sh   # generated with your credentials — skip if not present
 
-# 4. Deploy the operator via OLM bundle
+# 3. Deploy the operator via OLM bundle
 operator-sdk run bundle <your-bundle-image> --pull-secret-name docker-pull-secret
+# The operator auto-creates the KServeRawMode CR — KServe installation begins immediately!
 
-# 5. Install KServe by applying the Custom Resource
-kubectl apply -f kserverawmode-sample.yaml
-
-# 6. Watch progress (Ready in ~60s)
+# 4. Watch progress (Ready in ~60s)
 kubectl get kserverawmode -A -w
 
-# 7. Deploy and test the Iris model
+# 5. Deploy and test the Iris model
 kubectl apply -f 06-sample-model/sklearn-iris.yaml
 kubectl get isvc sklearn-iris -w   # wait for READY=True, then:
 kubectl run --rm -i curl-test --image=curlimages/curl --restart=Never -- \
@@ -31,7 +26,7 @@ kubectl run --rm -i curl-test --image=curlimages/curl --restart=Never -- \
 # Expected: {"predictions":[1]}
 ```
 
-> **Alternative (no OLM):** Skip steps 1 & 4. The `kubectl apply -f operator-deployment.yaml` in step 2 already installs the operator directly.
+> **Alternative (no OLM):** Skip step 1. Instead of step 3, run `kubectl apply -f operator-deployment.yaml` to deploy the operator directly.
 
 ---
 
@@ -64,7 +59,7 @@ If this package was generated with `--docker-username` and `--docker-password`, 
 ```bash
 kubectl apply -f operator-deployment.yaml   # creates TARGET_DIR_NAME-system namespace
 bash setup-credentials.sh                   # creates pull secret in all namespaces
-kubectl apply -f kserverawmode-sample.yaml
+# Operator auto-creates KServeRawMode CR — installation begins automatically
 ```
 
 **For OLM bundle deploy:**
@@ -72,7 +67,7 @@ kubectl apply -f kserverawmode-sample.yaml
 operator-sdk olm install                    # creates olm + operators namespaces
 bash setup-credentials.sh                   # creates pull secret in all namespaces
 operator-sdk run bundle <your-bundle-image> --pull-secret-name docker-pull-secret
-kubectl apply -f kserverawmode-sample.yaml
+# Operator auto-creates KServeRawMode CR — installation begins automatically
 ```
 
 ### Manual pull secret creation (without setup-credentials.sh)
@@ -120,17 +115,11 @@ operator-sdk run bundle <your-bundle-image-tag> \
 
 ---
 
-### Step 2: Install KServe Configuration
+### Step 2: Watch KServe Auto-Installation
 
-Once the operator is running, submit the Custom Resource to trigger the KServe component installation (Namespace, RBAC, Core Controllers, and Runtimes).
+The operator automatically creates a default `KServeRawMode` CR on startup and begins installing KServe components (cert-manager, Namespace, CRDs, RBAC, Core Controllers, and Runtimes). No manual CR creation is needed.
 
-```bash
-# Wait for the operator pod to be ready first
-kubectl rollout status deployment -n TARGET_DIR_NAME-system --timeout=120s
-
-# Then submit the CR to begin KServe installation
-kubectl apply -f kserverawmode-sample.yaml
-```
+> **Note:** If you need to delay installation, you can set the environment variable `DISABLE_AUTO_INIT=true` on the controller manager. In that case, manually apply `kubectl apply -f kserve-rawmode.yaml` when ready.
 
 ---
 
@@ -145,12 +134,12 @@ kubectl get kserverawmode -A -w
 Expected output:
 ```
 NAMESPACE   NAME                   PHASE                   AGE
-default     kserverawmode-sample   InstallingCertManager   5s
-default     kserverawmode-sample   InstallingCRDs          25s
-default     kserverawmode-sample   InstallingRBAC          27s
-default     kserverawmode-sample   InstallingCore          28s
-default     kserverawmode-sample   InstallingRuntimes      55s
-default     kserverawmode-sample   Ready                   60s
+default     kserve-rawmode   InstallingCertManager   5s
+default     kserve-rawmode   InstallingCRDs          25s
+default     kserve-rawmode   InstallingRBAC          27s
+default     kserve-rawmode   InstallingCore          28s
+default     kserve-rawmode   InstallingRuntimes      55s
+default     kserve-rawmode   Ready                   60s
 ```
 
 Once `Ready`, verify all KServe system components are up:

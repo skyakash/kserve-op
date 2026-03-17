@@ -25,7 +25,7 @@ flowchart TD
         OperScript[["generate-kserve-operator.sh\n-t p-kserve-operator -s p-kserve-raw\n-i docker.io/akashneha/...:v51\n--pull-secret dockerhub-creds -x -o"]]:::script
         OperProj["Go Operator Project\n(p-kserve-operator/)"]:::package
         DockerImg["Container Image\ndocker.io/akashneha/kserve-raw-operator:v51\n(multi-platform: amd64/arm64)"]:::package
-        StandalonePkg["Standalone Package\n(p-kserve-operator-package/)\noperator-deployment.yaml\nkserverawmode-sample.yaml\n06-sample-model/"]:::package
+        StandalonePkg["Standalone Package\n(p-kserve-operator-package/)\noperator-deployment.yaml\nkserve-rawmode.yaml\n06-sample-model/"]:::package
         OLMPkg["OLM Bundle Image\ndocker.io/akashneha/kserve-raw-operator:v51-bundle"]:::package
 
         OperScript -->|operator-sdk scaffold| OperProj
@@ -45,7 +45,7 @@ flowchart TD
     subgraph K8s["Target Kubernetes Cluster"]
         K8sCluster[("Kubernetes Cluster")]:::k8s
         OperPod["Operator Controller Pod\n(pulls from dockerhub-creds secret)"]:::k8s
-        CR["kubectl apply kserverawmode-sample.yaml\nKServeRawMode CR"]:::k8s
+        CR["kubectl apply kserve-rawmode.yaml\nKServeRawMode CR"]:::k8s
         KServeStack["Active KServe Stack\ncert-manager + KServe CRDs + RBAC\nKServe Controller + ServingRuntimes"]:::k8s
         IFSvc["InferenceService\nsklearn-iris predictor"]:::k8s
 
@@ -67,7 +67,7 @@ sequenceDiagram
     participant Ctrl as Operator Controller
     participant Assets as Embedded Assets
 
-    User->>K8s: kubectl apply kserverawmode-sample.yaml
+    User->>K8s: kubectl apply kserve-rawmode.yaml
     K8s->>Ctrl: Reconcile(KServeRawMode)
     Ctrl->>Assets: Read 01-cert-manager/
     Ctrl->>K8s: Server-Side Apply cert-manager
@@ -93,6 +93,6 @@ The following was verified in a live test on a fresh Docker Desktop Kubernetes c
 | Generate operator | `./generate-kserve-operator.sh ... -x -o` | ✅ Operator project + OLM bundle built |
 | Install OLM | `operator-sdk olm install` | ✅ v0.28.0 installed |
 | Deploy bundle | `operator-sdk run bundle ...v51-bundle` | ✅ CSV Phase: Succeeded |
-| Apply CR | `kubectl apply -f ...kserverawmode-sample.yaml` | ✅ KServe 2/2 Running |
+| Apply CR | `kubectl apply -f ...kserve-rawmode.yaml` | ✅ KServe 2/2 Running |
 | Test inference | `curl .../sklearn-iris:predict` | ✅ `{"predictions":[1,1]}` |
 | Cleanup | `./generate-kserve-operator.sh -c p-kserve-operator` | ✅ Workspace restored |

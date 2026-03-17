@@ -102,7 +102,7 @@ Once the parameters are provided, the script executes the following sequence aut
 5. **Containerization**: If requested via the `-b / --build` flag, executes `make docker-build IMG=<image-tag>`.
     - Note: If the `--multi-platform` flag is passed, this step shifts to `make docker-buildx`, which triggers a multi-architecture compile and auto-push.
 6. **Registry Push**: If requested via the `-p / --push` flag, executes `make docker-push IMG=<image-tag>` to push your newly built container directly to your remote registry.
-7. **Deployment Package**: Automatically runs `kustomize build` to generate a self-contained `<target>-package/` directory with `operator-deployment.yaml` and `kserverawmode-sample.yaml` ready for immediate deployment.
+7. **Deployment Package**: Automatically runs `kustomize build` to generate a self-contained `<target>-package/` directory with `operator-deployment.yaml` and `kserve-rawmode.yaml` ready for immediate deployment.
 
 ## Deploying the Operator
 
@@ -132,7 +132,7 @@ kubectl apply -f p-kserve-operator-package/operator-deployment.yaml
 kubectl rollout status deployment -n p-kserve-operator-system --timeout=120s
 
 # 3. Trigger the KServe installation loop using the sample CR
-kubectl apply -f p-kserve-operator-package/kserverawmode-sample.yaml
+kubectl apply -f p-kserve-operator-package/kserve-rawmode.yaml
 
 # 4. Watch the installation phase progress
 kubectl get kserverawmode -A -w
@@ -167,7 +167,7 @@ operator-sdk run bundle docker.io/akashneha/kserve-raw-operator:v152-bundle \
 kubectl get csv -n operators
 
 # 4. Trigger the KServe installation by applying the sample Custom Resource
-kubectl apply -f p-kserve-operator-package/kserverawmode-sample.yaml
+kubectl apply -f p-kserve-operator-package/kserve-rawmode.yaml
 
 # 5. Watch KServe pods come up
 kubectl get pods -n kserve -w
@@ -186,12 +186,12 @@ kubectl get kserverawmode -A -w
 Expected output:
 ```
 NAMESPACE   NAME                   PHASE                   AGE
-default     kserverawmode-sample   InstallingCertManager   5s
-default     kserverawmode-sample   InstallingCRDs          25s
-default     kserverawmode-sample   InstallingRBAC          27s
-default     kserverawmode-sample   InstallingCore          28s
-default     kserverawmode-sample   InstallingRuntimes      55s
-default     kserverawmode-sample   Ready                   60s
+default     kserve-rawmode   InstallingCertManager   5s
+default     kserve-rawmode   InstallingCRDs          25s
+default     kserve-rawmode   InstallingRBAC          27s
+default     kserve-rawmode   InstallingCore          28s
+default     kserve-rawmode   InstallingRuntimes      55s
+default     kserve-rawmode   Ready                   60s
 ```
 
 The operator polls for real pod readiness at each stage — no manual `sleep` commands needed.

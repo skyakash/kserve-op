@@ -79,12 +79,12 @@ This script utilizes `operator-sdk` (v1.42.0+) to dynamically scaffold a custom 
    ```bash
    # Option A: Direct manifests
    kubectl apply -f p-kserve-operator-package/operator-deployment.yaml
-   kubectl apply -f p-kserve-operator-package/kserverawmode-sample.yaml
+   kubectl apply -f p-kserve-operator-package/kserve-rawmode.yaml
 
    # Option B: OLM bundle (requires OLM pre-installed)
    operator-sdk run bundle docker.io/your-org/kserve-raw-operator:v1-bundle \
      --pull-secret-name docker-pull-secret
-   kubectl apply -f p-kserve-operator-package/kserverawmode-sample.yaml
+   kubectl apply -f p-kserve-operator-package/kserve-rawmode.yaml
    ```
 5. **Monitor** the installation progress and **validate** the Iris inference model:
    ```bash

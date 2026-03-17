@@ -32,7 +32,7 @@ A new shell script template copied to `<target>-package/install.sh` at generatio
 - `--pull-secret <name>` CLI flag to patch in a pull secret at install time
 - `--olm` flag for OLM bundle deployment path with `operator-sdk run bundle`
 - Defaults to the baked-in image if no `--image` is provided
-- Applies `operator-deployment.yaml` → `kserverawmode-sample.yaml` in order
+- Applies `operator-deployment.yaml` → `kserve-rawmode.yaml` in order
 
 Also stores the baked-in default image in a `IMAGE` variable at the top of the script so the user can see what it is by reading `install.sh`.
 

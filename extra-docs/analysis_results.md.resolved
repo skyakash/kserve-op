@@ -1,0 +1,130 @@
+# KServe Operator Project — Analysis Report
+
+## TL;DR
+
+**Yes, you are building a real operator** — not just scaffolding. But it follows a **"manifest-applier" pattern**, not a traditional controller pattern. The sklearn deployment issue is a **real bug** in the ingress configuration.
+
+---
+
+## 1. Is This Really an Operator or Just Scaffolding?
+
+### Verdict: **It IS a working operator, but a simple one**
+
+The project is a legitimate Kubernetes operator built with Operator-SDK / Kubebuilder. Here's what makes it a real operator vs. just scaffolding:
+
+| Aspect | Status | Detail |
+|--------|--------|--------|
+| CRD ([KServeRawMode](file:///Users/akashdeo/kserve-op/p-kserve-operator/api/v1alpha1/kserverawmode_types.go#37-44)) | ✅ Real | Custom Resource registered, deepcopy generated |
+| Controller reconcile loop | ✅ Real | [kserverawmode_controller.go](file:///Users/akashdeo/kserve-op/p-kserve-operator/internal/controller/kserverawmode_controller.go) has real logic |
+| Manifest application | ✅ Real | [apply.go](file:///Users/akashdeo/kserve-op/p-kserve-operator/internal/controller/apply.go) uses Server-Side Apply with embedded YAML |
+| OLM Bundle | ✅ Real | Full bundle directory, bundle Dockerfile |
+| Docker image | ✅ Real | Multi-stage Dockerfile, multi-platform build support |
+| Deployable package | ✅ Real | `p-kserve-operator-package` with kustomized manifests |
+
+### However, it has significant limitations
+
+> [!WARNING]
+> The operator is a **"manifest-applier"** — it does NOT use any actual KServe controller code from `kserve-master`. It simply deploys pre-baked YAML files.
+
+**What the Reconcile loop actually does:**
+
+```
+KServeRawMode CR created
+  → Apply cert-manager.yaml (pre-baked)
+  → Create 'kserve' namespace
+  → Apply kserve-crds.yaml (pre-baked)
+  → Apply kserve-rbac.yaml (pre-baked)
+  → Apply kserve-core.yaml (pre-baked, 1.5MB monolith)
+  → Sleep 15 seconds
+  → Apply kserve-cluster-resources.yaml (pre-baked)
+  → Set status.phase = "Ready"
+  → DONE (never reconciles again)
+```
+
+**Key architectural gaps vs. a "real" KServe operator:**
+
+| Gap | Detail |
+|-----|--------|
+| **Empty CRD Spec** | [KServeRawModeSpec](file:///Users/akashdeo/kserve-op/p-kserve-operator/api/v1alpha1/kserverawmode_types.go#24-26) has zero fields — no user-configurable options |
+| **No idempotency** | Once `Phase == "Ready"`, the controller exits immediately on all future reconciles |
+| **No drift detection** | If someone deletes a KServe component, the operator won't repair it |
+| **No upgrade path** | Manifests are baked at build time; upgrading requires rebuilding the entire operator image |
+| **Hardcoded `time.Sleep(15s)`** | [waitForNamespacePodsReady()](file:///Users/akashdeo/kserve-op/p-kserve-operator/internal/controller/apply.go#76-86) doesn't actually check pod readiness — it just sleeps |
+| **No KServe Go code** | None of the `kserve-master/pkg/controller/` Go code is imported or used |
+| **Boilerplate tests** | The unit test is KubeBuilder default scaffolding with `TODO(user)` comments still present |
+
+### What `kserve-master` is actually used for
+
+`kserve-master` is used **only by the generation scripts** at build time:
+- [generate-kserve-raw.sh](file:///Users/akashdeo/kserve-op/generate-kserve-raw.sh) runs `kustomize build` against `kserve-master/config/` directories to extract YAML manifests
+- These manifests are then copied into the operator's `internal/controller/assets/` as embedded Go resources
+- **At runtime**, the operator has no connection to `kserve-master` at all
+
+---
+
+## 2. The sklearn Deployment Issue
+
+### Root Cause: **Ingress configuration still references Istio**
+
+The `inferenceservice-config` ConfigMap inside [kserve-core.yaml](file:///Users/akashdeo/kserve-op/p-kserve-operator/internal/controller/assets/04-kserve-core/kserve-core.yaml) has:
+
+```yaml
+deploy: '{"defaultDeploymentMode": "RawDeployment"}'   # ✅ Correct
+
+ingress: '{
+    "ingressClassName": "istio",                        # ❌ Problem!
+    "kserveIngressGateway": "kserve/kserve-ingress-gateway",
+    "ingressGateway": "knative-serving/knative-ingress-gateway",
+    "localGateway": "knative-serving/knative-local-gateway",
+    ...
+}'
+```
+
+> [!CAUTION]
+> The deploy config correctly says `RawDeployment`, but the ingress config **still references Istio gateway classes and KNative gateways**, which don't exist in a cluster without Istio/KNative.
+
+### What happens when you deploy sklearn-iris
+
+1. You apply [sklearn-iris.yaml](file:///Users/akashdeo/kserve-op/p-kserve-operator-package/06-sample-model/sklearn-iris.yaml) with annotation `serving.kserve.io/deploymentMode: RawDeployment`
+2. KServe controller picks it up and creates a K8s Deployment + Service (raw mode ✅)
+3. KServe then tries to create an **Ingress** with `ingressClassName: "istio"` — which **fails silently** or the Ingress stays unresolved
+4. The InferenceService likely gets stuck — it creates the pods but the URL/readiness never resolves because there's no Istio ingress controller
+
+### Additional sklearn concerns
+
+- The `storageUri` is `gs://kfserving-examples/models/sklearn/1.0/model` — this requires **internet access** and a GCS-compatible storage initializer. In an airgapped or restricted environment, this will fail
+- The model spec uses the shorthand `sklearn` field — KServe relies on `ClusterServingRuntime` matching. The `kserve-sklearnserver` runtime uses image `kserve/sklearnserver:latest` which must be pullable from the cluster
+
+---
+
+## 3. Summary of Findings
+
+```mermaid
+graph TD
+    A["generate-kserve-raw.sh"] -->|"kustomize build against kserve-master"| B["Raw YAML Manifests"]
+    B -->|"copied into assets/"| C["generate-kserve-operator.sh"]
+    C -->|"operator-sdk init + template rendering"| D["p-kserve-operator"]
+    D -->|"docker build"| E["Operator Container Image"]
+    E -->|"deployed to cluster"| F["Operator Pod"]
+    F -->|"on KServeRawMode CR"| G["Applies baked manifests via SSA"]
+    G --> H["KServe Controller Pod running"]
+    H -->|"InferenceService applied"| I["sklearn Deployment Created"]
+    I -->|"Ingress with istio class"| J["❌ Ingress fails - no Istio"]
+
+    style J fill:#ff6b6b,color:#fff
+    style G fill:#ffd93d,color:#333
+```
+
+### Is it an operator? ✅ Yes — a simple, functional one
+### Is it production-quality? ❌ No — it's a manifest installer with an operator wrapper
+### Is sklearn broken? ⚠️ Likely yes — ingress misconfiguration for non-Istio clusters
+
+---
+
+## 4. Recommendations (If You Want to Proceed)
+
+1. **Fix the ingress config** — In `generate-kserve-raw.sh`, patch the `ingress` section of `inferenceservice-config` to remove Istio references and set `"disableIngressCreation": true` or use a generic `ingressClassName`
+2. **Add Spec fields** — Give `KServeRawModeSpec` configurable fields (ingress class, deployment mode, namespace, etc.)
+3. **Implement drift reconciliation** — Re-apply manifests on each reconcile, not just the first time
+4. **Replace `time.Sleep`** — Add actual pod readiness checks
+5. **Test with a local model** — Replace the GCS `storageUri` with a local/accessible model for testing

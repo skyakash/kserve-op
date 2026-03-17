@@ -364,13 +364,13 @@ cd ../../
 bin/kustomize build config/default > "${PACKAGE_DIR}/operator-deployment.yaml"
 
 # Generate a sample Custom Resource to easily test the deployment later
-cp "${SCRIPT_DIR}/kserve-operator-base/kserverawmode-sample.yaml.tmpl" "${PACKAGE_DIR}/kserverawmode-sample.yaml"
+cp "${SCRIPT_DIR}/kserve-operator-base/kserve-rawmode.yaml.tmpl" "${PACKAGE_DIR}/kserve-rawmode.yaml"
 
 # Dynamically replace 'API_DOMAIN' with whatever domain the user inputted
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    sed -i '' "s/API_DOMAIN/${API_DOMAIN}/g" "${PACKAGE_DIR}/kserverawmode-sample.yaml"
+    sed -i '' "s/API_DOMAIN/${API_DOMAIN}/g" "${PACKAGE_DIR}/kserve-rawmode.yaml"
 else
-    sed -i "s/API_DOMAIN/${API_DOMAIN}/g" "${PACKAGE_DIR}/kserverawmode-sample.yaml"
+    sed -i "s/API_DOMAIN/${API_DOMAIN}/g" "${PACKAGE_DIR}/kserve-rawmode.yaml"
 fi
 
 # Copy the Iris test payload from the raw source if it exists
@@ -411,13 +411,13 @@ if [ -n "${DOCKER_USERNAME}" ] && [ -n "${DOCKER_PASSWORD}" ]; then
 #   For direct manifest deploy:
 #     1. kubectl apply -f operator-deployment.yaml   (creates ${TARGET_DIR_NAME}-system)
 #     2. bash setup-credentials.sh
-#     3. kubectl apply -f kserverawmode-sample.yaml
+#     (operator auto-creates KServeRawMode CR — KServe installation begins)
 #
 #   For OLM bundle deploy:
 #     1. operator-sdk olm install                    (creates olm, operators)
 #     2. bash setup-credentials.sh
 #     3. operator-sdk run bundle <your-bundle-image> --pull-secret-name ${SECRET_NAME}
-#     4. kubectl apply -f kserverawmode-sample.yaml
+#     (operator auto-creates KServeRawMode CR — KServe installation begins)
 # =============================================================================
 
 set -e

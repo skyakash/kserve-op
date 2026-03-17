@@ -48,29 +48,27 @@ operator-sdk olm install
 kubectl get pods -n olm   # wait until all pods are Running
 ```
 
-### Step 2 — Set up image pull credentials
+### Step 2 — Set up image pull credentials *(skip if images are public)*
 ```bash
-# Apply operator manifests first (creates the operator system namespace)
-kubectl apply -f operator-deployment.yaml
-
-# Then run the credential helper (skip if images are public)
 bash setup-credentials.sh
 ```
 
-### Step 3 — Deploy the operator via OLM bundle *(OR use direct manifests below)*
+### Step 3 — Deploy the operator
+
+**Option A: OLM Bundle (recommended)**
 ```bash
 operator-sdk run bundle docker.io/your-org/kserve-raw-operator:v1-bundle \
   --pull-secret-name docker-pull-secret
 ```
 
-> **Alternative (Direct, no OLM):** Skip Step 1 & this Step 3. The `kubectl apply` in Step 2 already deployed the operator.
-
-### Step 4 — Install KServe by applying the Custom Resource
+**Option B: Direct manifests (no OLM needed — skip Step 1)**
 ```bash
-kubectl apply -f kserverawmode-sample.yaml
+kubectl apply -f operator-deployment.yaml
 ```
 
-### Step 5 — Watch installation progress
+> **Auto-Init:** The operator automatically creates a default `KServeRawMode` CR on startup. KServe installation begins immediately — no manual `kubectl apply -f kserve-rawmode.yaml` required.
+
+### Step 4 — Watch installation progress
 ```bash
 kubectl get kserverawmode -A -w
 ```
@@ -79,7 +77,7 @@ Expected progression:
 PHASE                   → InstallingCertManager → InstallingCRDs → InstallingRBAC → InstallingCore → InstallingRuntimes → Ready
 ```
 
-### Step 6 — Deploy and test the Iris inference model
+### Step 5 — Deploy and test the Iris inference model
 ```bash
 kubectl apply -f 06-sample-model/sklearn-iris.yaml
 
@@ -98,7 +96,7 @@ kubectl run --rm -i curl-test --image=curlimages/curl --restart=Never -- \
 
 ## Part C: Alternative — Offline / Air-Gapped Model Test
 
-If your cluster cannot reach `gs://` (Google Cloud Storage) to download model weights, `Step 6` above will fail. Use this PVC-based offline alternative instead.
+If your cluster cannot reach `gs://` (Google Cloud Storage) to download model weights, `Step 5` above will fail. Use this PVC-based offline alternative instead.
 
 ### 1. Create a local PersistentVolumeClaim
 ```bash
