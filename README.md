@@ -77,15 +77,14 @@ This script utilizes `operator-sdk` (v1.42.0+) to dynamically scaffold a custom 
    ```
 4. **Deploy** the generated package to your cluster:
    ```bash
-   # Option A: Direct manifests
-   kubectl apply -f p-kserve-operator-package/operator-deployment.yaml
-   kubectl apply -f p-kserve-operator-package/kserve-rawmode.yaml
-
-   # Option B: OLM bundle (requires OLM pre-installed)
+   # Option A: OLM bundle (recommended — requires OLM pre-installed)
    operator-sdk run bundle docker.io/your-org/kserve-raw-operator:v1-bundle \
      --pull-secret-name docker-pull-secret
-   kubectl apply -f p-kserve-operator-package/kserve-rawmode.yaml
+
+   # Option B: Direct manifests (no OLM needed)
+   kubectl apply -f p-kserve-operator-package/operator-deployment.yaml
    ```
+   > The operator **auto-creates** the `KServeRawMode` CR on startup — KServe installation begins immediately.
 5. **Monitor** the installation progress and **validate** the Iris inference model:
    ```bash
    # Watch phase progression (no manual sleep needed)

@@ -128,13 +128,8 @@ The script automatically generates a pre-compiled `<target>-package/` deployment
 # 1. Apply the precompiled Operator controller
 kubectl apply -f p-kserve-operator-package/operator-deployment.yaml
 
-# 2. Wait for the operator pod to be ready before submitting the CR
-kubectl rollout status deployment -n p-kserve-operator-system --timeout=120s
-
-# 3. Trigger the KServe installation loop using the sample CR
-kubectl apply -f p-kserve-operator-package/kserve-rawmode.yaml
-
-# 4. Watch the installation phase progress
+# 2. Watch the installation phase progress
+# (The operator auto-creates the KServeRawMode CR — KServe installation begins automatically)
 kubectl get kserverawmode -A -w
 ```
 
@@ -153,24 +148,16 @@ If you generated an OLM bundle using the `-o` flag, you can install the operator
 > **OLM Platform Compatibility**: The script uses `docker buildx build --provenance=false --sbom=false` when building the bundle image. This produces a flat single-manifest image (auto-detecting your host arch via `uname -m`). Without these flags, Docker BuildKit adds attestation manifests that create a multi-arch manifest list which OLM's image unpacker cannot resolve. This works correctly on both `linux/amd64` (x86_64) and `linux/arm64` (aarch64) hosts.
 
 ```bash
-# 1. Create a pull secret in the default namespace so OLM can pull the bundle image
-kubectl create secret docker-registry docker-pull-secret \
-  --docker-server=docker.io \
-  --docker-username=<your-username> \
-  --docker-password=<your-token>
+# 1. Set up pull credentials (skip if images are public)
+bash setup-credentials.sh
 
 # 2. Deploy the bundle (installs the Operator via OLM)
 operator-sdk run bundle docker.io/akashneha/kserve-raw-operator:v152-bundle \
   --pull-secret-name docker-pull-secret
 
-# 3. Verify the CSV (ClusterServiceVersion) reached Succeeded phase
-kubectl get csv -n operators
-
-# 4. Trigger the KServe installation by applying the sample Custom Resource
-kubectl apply -f p-kserve-operator-package/kserve-rawmode.yaml
-
-# 5. Watch KServe pods come up
-kubectl get pods -n kserve -w
+# 3. Watch KServe auto-installation progress
+# (The operator auto-creates the KServeRawMode CR — no manual apply needed)
+kubectl get kserverawmode -A -w
 ```
 
 *Note: If you provided a `--pull-secret` during generation, the generated OLM CSV will automatically include it, ensuring the bundle can be unpacked on clusters with pull restrictions.*
