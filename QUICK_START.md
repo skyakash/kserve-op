@@ -13,7 +13,7 @@ Two paths depending on what you're doing:
 
 ### Step 1 — Extract KServe raw manifests
 ```bash
-cd /path/to/kserve-op
+cd /Users/akashdeo/kserve-op
 ./generate-kserve-raw.sh -t p-kserve-raw
 ```
 
@@ -21,12 +21,12 @@ cd /path/to/kserve-op
 ```bash
 ./generate-kserve-operator.sh \
   -t p-kserve-operator \
-  -m github.com/your-org/my-kserve-operator \
-  -d your.domain.com \
+  -m github.com/akashdeo/kserve-operator \
+  -d akashdeo.com \
   -s p-kserve-raw \
-  -i docker.io/your-org/kserve-raw-operator:v1 \
+  -i docker.io/akashneha/kserve-raw-operator:v156 \
   --docker-server docker.io \
-  --docker-username <your-user> \
+  --docker-username akashneha \
   --docker-password <your-token> \
   --pull-secret docker-pull-secret \
   -b -p -o
@@ -41,6 +41,10 @@ This outputs two directories:
 ## Part B: Deployer — Install KServe on a Cluster
 
 You only need the `*-package/` folder and `kubectl`/`operator-sdk` on your machine.
+
+```bash
+cd p-kserve-operator-package   # all commands below run from inside this folder
+```
 
 ### Step 1 — Install OLM (once per cluster)
 ```bash
@@ -57,7 +61,7 @@ bash setup-credentials.sh
 
 **Option A: OLM Bundle (recommended)**
 ```bash
-operator-sdk run bundle docker.io/your-org/kserve-raw-operator:v1-bundle \
+operator-sdk run bundle docker.io/akashneha/kserve-raw-operator:v156-bundle \
   --pull-secret-name docker-pull-secret
 ```
 
@@ -74,7 +78,13 @@ kubectl get kserverawmode -A -w
 ```
 Expected progression:
 ```
-PHASE                   → InstallingCertManager → InstallingCRDs → InstallingRBAC → InstallingCore → InstallingRuntimes → Ready
+NAMESPACE   NAME             PHASE                   AGE
+default     kserve-rawmode   InstallingCertManager   5s
+default     kserve-rawmode   InstallingCRDs          25s
+default     kserve-rawmode   InstallingRBAC          27s
+default     kserve-rawmode   InstallingCore          28s
+default     kserve-rawmode   InstallingRuntimes      55s
+default     kserve-rawmode   Ready                   60s
 ```
 
 ### Step 5 — Deploy and test the Iris inference model
