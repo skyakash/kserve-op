@@ -1,4 +1,4 @@
-# KServe Offline Operator Tooling
+linux # KServe Offline Operator Tooling
 
 This repository contains powerful automated tooling designed to parse, extract, configure, and package **KServe** for standalone offline and air-gapped deployments utilizing `RawDeployment` architecture (bypassing Knative and Istio requirements).
 
@@ -8,14 +8,53 @@ It is composed of two primary bash automation pipelines that rely on modular tem
 
 ## 🛑 Prerequisites
 
-Before running the generation scripts, ensure the following dependencies are installed on your build machine:
+Before running the generation scripts, ensure the following dependencies are installed on your **build machine** (supports macOS and RHEL/Linux x86_64):
 
-* **[Go](https://go.dev/doc/install)** (v1.20+)
-* **[Operator SDK](https://sdk.operatorframework.io/docs/installation/)** (v1.33+)
-* **[Docker](https://docs.docker.com/get-docker/)** (Required for container builds & multi-arch `buildx`)
-* **[Python 3](https://www.python.org/downloads/)** (With the `yaml` package installed: `pip install pyyaml`)
-* **[kubectl](https://kubernetes.io/docs/tasks/tools/)**
-* **[Kustomize](https://kubectl.docs.kubernetes.io/installation/kustomize/)** (v5.0+)
+| Tool | Version | Required by |
+|---|---|---|
+| Go | v1.21+ | `generate-kserve-operator.sh` |
+| Operator SDK | v1.42+ | `generate-kserve-operator.sh` |
+| Docker | v20.10+ | `generate-kserve-operator.sh` |
+| Python 3 + pyyaml | Any | `generate-kserve-raw.sh` |
+| yq | v4+ | `generate-kserve-operator.sh` (`--olm` flag) |
+| kubectl | v1.24+ | Both scripts |
+| Kustomize | v5.0+ | `generate-kserve-raw.sh` (global); auto-downloaded for operator |
+
+### Installing Prerequisites
+
+**macOS (Homebrew):**
+```bash
+brew install go operator-sdk yq kustomize python kubectl
+pip3 install pyyaml
+# Docker: install Docker Desktop from https://docs.docker.com/desktop/mac/
+```
+
+**RHEL / CentOS / Fedora (x86_64):**
+```bash
+# Go
+wget https://go.dev/dl/go1.21.13.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.21.13.linux-amd64.tar.gz
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc && source ~/.bashrc
+
+# Operator SDK
+export ARCH=amd64 OS=linux
+curl -LO https://github.com/operator-framework/operator-sdk/releases/download/v1.42.0/operator-sdk_${OS}_${ARCH}
+chmod +x operator-sdk_${OS}_${ARCH} && sudo mv operator-sdk_${OS}_${ARCH} /usr/local/bin/operator-sdk
+
+# yq
+sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+sudo chmod +x /usr/local/bin/yq
+
+# Kustomize
+curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+sudo mv kustomize /usr/local/bin/
+
+# Python + pyyaml, kubectl, Docker
+sudo dnf install -y python3 python3-pip
+pip3 install pyyaml
+# kubectl: https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/
+# Docker Engine: https://docs.docker.com/engine/install/rhel/
+```
 
 ---
 
@@ -77,9 +116,9 @@ This script utilizes `operator-sdk` (v1.42.0+) to dynamically scaffold a custom 
    ```
 4. **Deploy** the generated package to your cluster:
    ```bash
-   # Option A: OLM bundle (recommended — requires OLM pre-installed)
+    # Option A: OLM bundle (recommended — requires OLM pre-installed)
    operator-sdk run bundle docker.io/your-org/kserve-raw-operator:v1-bundle \
-     --pull-secret-name docker-pull-secret
+     --pull-secret-name <your-pull-secret>
 
    # Option B: Direct manifests (no OLM needed)
    kubectl apply -f p-kserve-operator-package/operator-deployment.yaml
@@ -92,9 +131,10 @@ This script utilizes `operator-sdk` (v1.42.0+) to dynamically scaffold a custom 
 
    # Once Ready, deploy and test the sample model
    kubectl apply -f p-kserve-operator-package/06-sample-model/sklearn-iris.yaml
-   kubectl port-forward svc/sklearn-iris-predictor 8080:80 &
-   curl -s -H 'Content-Type: application/json' \
+   kubectl get isvc sklearn-iris -w   # wait for READY=True, then:
+   kubectl run --rm -i curl-test --image=curlimages/curl --restart=Never -- \
+     curl -s -H 'Content-Type: application/json' \
      -d '{"instances":[[6.8,2.8,4.8,1.4]]}' \
-     http://localhost:8080/v1/models/sklearn-iris:predict
+     http://sklearn-iris-predictor.default.svc.cluster.local/v1/models/sklearn-iris:predict
    # Expected: {"predictions":[1]}
    ```

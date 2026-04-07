@@ -7,23 +7,68 @@ Instead of interacting with KServe manually via bash scripts, this tool builds a
 
 ## Prerequisites
 
-Before running the script, ensure you have the following installed and pre-configured:
+Before running the script, ensure you have the following tools installed on your build machine. The script supports both **macOS** and **RHEL/Linux x86_64** build environments.
 
-1. **Source Manifests**: You **MUST** run the `generate-kserve-raw.sh` script first to extract and compile the raw YAML files from KServe master. This script depends entirely on those cleanly split, patched directories (like `04-kserve-core`).
-2. **Template Base**: Ensure the `kserve-operator-base/` directory is located in the exact same folder as the script. This contains the pre-configured Golang source templates.
-3. **Operator SDK**: You must have `operator-sdk` (v1.42.0+) installed and available in your global `$PATH`, or present locally at `./tools/operator-sdk`.
-4. **Golang**: `go` must be installed (Go 1.26.0+) to compile the controller and manage module dependencies.
-5. **Make**: Required to run the Operator-SDK Makefile targets (`make generate`, `make manifests`). Recommended GNU Make 3.81+ or 4.x.
-6. **Docker**: `docker` must be installed (v20.10+) and running, as the script initiates `docker buildx build` for multi-architecture image compilation.
-7. **Kustomize**: (v5.0+) The script automatically downloads a localized version into `bin/kustomize`, but having it globally installed allows you to bypass the proxy download step in offline environments.
-8. **OLM** *(only required for OLM Bundle deployment with `-o` flag)*: The Operator Lifecycle Manager must be pre-installed on your target cluster. Install it once with:
-   ```bash
-   operator-sdk olm install
-   ```
-   Verify all pods are running before proceeding:
-   ```bash
-   kubectl get pods -n olm
-   ```
+| Tool | Version | Purpose |
+|---|---|---|
+| Source Manifests (`generate-kserve-raw.sh` output) | — | Required input — run this script first |
+| Operator SDK | v1.42.0+ | Scaffolds and builds the Go operator |
+| Go | v1.21+ | Compiles the operator controller |
+| Make | 3.81+ | Runs Operator-SDK Makefile targets |
+| Docker | v20.10+ | Builds and pushes container images |
+| yq | v4+ | Patches OLM bundle CSV `installModes` |
+| Kustomize | v5.0+ | Generates deployment manifests (auto-downloaded; global install recommended for air-gapped) |
+| OLM | v0.28+ | Required **only** on the target cluster when using `-o` flag |
+
+### Installing Prerequisites
+
+**macOS (Homebrew):**
+```bash
+brew install go operator-sdk yq kustomize make
+# Docker: install Docker Desktop from https://docs.docker.com/desktop/mac/
+```
+
+**RHEL / CentOS / Fedora (x86_64):**
+```bash
+# Go
+wget https://go.dev/dl/go1.21.13.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.21.13.linux-amd64.tar.gz
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc && source ~/.bashrc
+go version   # verify
+
+# Operator SDK
+export ARCH=amd64 OS=linux
+curl -LO https://github.com/operator-framework/operator-sdk/releases/download/v1.42.0/operator-sdk_${OS}_${ARCH}
+chmod +x operator-sdk_${OS}_${ARCH} && sudo mv operator-sdk_${OS}_${ARCH} /usr/local/bin/operator-sdk
+operator-sdk version   # verify
+
+# yq (direct binary — works on RHEL without snap)
+sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+sudo chmod +x /usr/local/bin/yq
+yq --version   # verify
+
+# Kustomize
+curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+sudo mv kustomize /usr/local/bin/
+kustomize version   # verify
+
+# Make (usually pre-installed on RHEL)
+sudo dnf install -y make
+
+# Docker Engine on RHEL
+# See: https://docs.docker.com/engine/install/rhel/
+# After install, start and enable:
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER   # allow non-root docker usage (re-login required)
+```
+
+### Installing OLM on the Target Cluster *(required for `-o` flag)*
+
+OLM must be pre-installed on your **Kubernetes cluster** (not the build machine) before deploying via bundle:
+```bash
+operator-sdk olm install
+kubectl get pods -n olm   # wait until all pods are Running
+```
 
 ## How to Run
 
@@ -45,6 +90,8 @@ chmod +x generate-kserve-operator.sh
 - `-p, --push`           : Automatically push the Docker image without prompting
 - `-x, --multi-platform` : Automatically compiles and pushes a multi-architecture image (amd64, arm64, s390x, ppc64le) using `docker-buildx`. *(Implies `-b`)*
 - `-o, --olm`            : Automatically generates and builds an Operator Lifecycle Manager (OLM) Bundle image for the registry. *(Implies `-b`)*
+- `--install-mode <mode>`: OLM install mode for the operator CSV. Valid values: `OwnNamespace` (default), `AllNamespaces`, `SingleNamespace`, `MultiNamespace`. Controls which namespaces the operator watches. `OwnNamespace` is the most restrictive and recommended for isolated deployments.
+- `--customer-registry <prefix>`: Customer private registry prefix (e.g., `artifactory.example.com/myrepo`). When set, all image references in the generated `operator-deployment.yaml` are rewritten to point to this registry. Also generates `mirror-images.sh` (for copying images via skopeo) and `deploy-bundle.sh` (interactive OLM/direct install helper) in the package directory.
 - `--pull-secret <name>` : Name of an existing `imagePullSecret` on the cluster (injected into the operator pod spec)
 - `--docker-server <url>` : Registry server URL for pull secret creation (default: `docker.io`)
 - `--docker-username <u>` : Registry username — when set, generates `setup-credentials.sh` in the output package
@@ -62,11 +109,12 @@ The following command was used to generate a fully multi-platform, OLM-ready ope
   -m github.com/akashdeo/p-kserve-operator \
   -d akashdeo.com \
   -s p-kserve-raw \
-  -i docker.io/akashneha/kserve-raw-operator:v152 \
+  -i docker.io/akashneha/kserve-raw-operator:v300 \
   --docker-server docker.io \
   --docker-username akashneha \
   --docker-password dckr_pat_xxx \
-  --pull-secret docker-pull-secret \
+  --pull-secret dockerhub-creds \
+  --install-mode OwnNamespace \
   -b -p -o
 ```
 
@@ -86,7 +134,7 @@ If you omit any of the required CLI flags, the script will gracefully fall back 
 2. **Go Module Path**: Your Go repository path (e.g., `github.com/akashdeo/p-kserve-operator`).
 3. **API Domain**: The domain for your Custom Resource Group (e.g., `akashdeo.com` will result in `operator.akashdeo.com`).
 4. **Manifest Directory**: The path to your previously generated raw manifests folder (e.g., `p-kserve-raw`).
-5. **Docker Image Tag**: The target container registry path and tag for the operator image (e.g., `docker.io/akashneha/kserve-raw-operator:v152`).
+5. **Docker Image Tag**: The target container registry path and tag for the operator image (e.g., `docker.io/akashneha/kserve-raw-operator:v300`).
 
 ## What it Does (Under the Hood)
 
@@ -117,7 +165,7 @@ You can interact with and deploy your custom operator to your cluster directly u
 
 ```bash
 # Deploy the Controller Manager to the cluster utilizing the image you just built
-make deploy IMG=docker.io/akashneha/kserve-raw-operator:v152
+make deploy IMG=docker.io/akashneha/kserve-raw-operator:v300
 ```
 
 ### Option B: Standalone Extraction Manifests (No Make)
@@ -152,8 +200,8 @@ If you generated an OLM bundle using the `-o` flag, you can install the operator
 bash setup-credentials.sh
 
 # 2. Deploy the bundle (installs the Operator via OLM)
-operator-sdk run bundle docker.io/akashneha/kserve-raw-operator:v152-bundle \
-  --pull-secret-name docker-pull-secret
+operator-sdk run bundle docker.io/akashneha/kserve-raw-operator:v300-bundle \
+  --pull-secret-name dockerhub-creds
 
 # 3. Watch KServe auto-installation progress
 # (The operator auto-creates the KServeRawMode CR — no manual apply needed)
@@ -161,6 +209,53 @@ kubectl get kserverawmode -A -w
 ```
 
 *Note: If you provided a `--pull-secret` during generation, the generated OLM CSV will automatically include it, ensuring the bundle can be unpacked on clusters with pull restrictions.*
+
+---
+
+### Option D: Customer / Private Registry Deployment
+
+If deploying to a customer environment with a private registry (e.g., Artifactory, Harbor, ECR), use the `--customer-registry` flag at generation time:
+
+```bash
+./generate-kserve-operator.sh \
+  -t p-kserve-operator \
+  -m github.com/akashdeo/p-kserve-operator \
+  -d akashdeo.com \
+  -s p-kserve-raw \
+  -i docker.io/akashneha/kserve-raw-operator:v300 \
+  --customer-registry localhost:5001/myrepo \
+  --pull-secret dockerhub-creds \
+  --install-mode OwnNamespace \
+  -b -p -o
+```
+
+This generates three additional files in `p-kserve-operator-package/`:
+
+| File | Purpose |
+|---|---|
+| `mirror-images.sh` | Run **once** on a machine with skopeo: copies operator + bundle images from source registry → private registry |
+| `deploy-bundle.sh` | Interactive installer for the customer: choose OLM bundle or direct kubectl apply |
+| `operator-deployment.yaml` | Pre-rewritten with `localhost:5001/myrepo/...` image references |
+
+**Workflow for simulating a customer environment with a local registry:**
+```bash
+# 1. Start a local registry container
+docker run -d -p 5001:5000 --name local-registry registry:2
+
+# 2. Push operator and bundle images to the local registry
+docker tag docker.io/akashneha/kserve-raw-operator:v300 localhost:5001/myrepo/kserve-raw-operator:v300
+docker push localhost:5001/myrepo/kserve-raw-operator:v300
+
+docker tag docker.io/akashneha/kserve-raw-operator:v300-bundle localhost:5001/myrepo/kserve-raw-operator:v300-bundle
+docker push localhost:5001/myrepo/kserve-raw-operator:v300-bundle
+
+# 3. Configure Kubernetes to trust the local registry (for Docker Desktop)
+# The registry must be reachable from inside the cluster as 'host.docker.internal:5001'
+# (Since localhost:5001 on your Mac maps to docker-desktop VM via host.docker.internal)
+
+# 4. Run the generated deploy-bundle.sh from inside p-kserve-operator-package/
+bash deploy-bundle.sh
+```
 
 ## Monitoring Install Progress
 
@@ -230,7 +325,7 @@ When all controller pods are `Running`, deploy the sample `sklearn-iris` model:
 
 **Expected Result:**
 ```json
-{"predictions": [1, 1]}
+{"predictions":[1]}
 ```
 
 If you receive the prediction integer array back, your generated Operator has successfully established a fully functioning, dependency-free KServe environment on your cluster!
@@ -245,7 +340,7 @@ If your cluster needs a Kubernetes secret to pull images from Docker Hub (to avo
   -m github.com/akashdeo/p-kserve-operator \
   -d akashdeo.com \
   -s p-kserve-raw \
-  -i docker.io/akashneha/kserve-raw-operator:v152 \
+  -i docker.io/akashneha/kserve-raw-operator:v300 \
   --pull-secret dockerhub-creds \
   -b -p -o
 ```

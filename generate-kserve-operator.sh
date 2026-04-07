@@ -24,6 +24,9 @@ DOCKER_SERVER="docker.io"
 DOCKER_USERNAME=""
 DOCKER_PASSWORD=""
 TRUST_CERT_PATH=""
+# Valid values: AllNamespaces | OwnNamespace | SingleNamespace | MultiNamespace
+INSTALL_MODE="OwnNamespace"
+CUSTOMER_REGISTRY=""
 
 # 1. Parse CLI Arguments
 while [[ "$#" -gt 0 ]]; do
@@ -38,6 +41,8 @@ while [[ "$#" -gt 0 ]]; do
         -p|--push) AUTO_PUSH=true; shift 1 ;;
         -x|--multi-platform) MULTI_PLATFORM=true; AUTO_BUILD=true; shift 1 ;;
         -o|--olm) GEN_OLM_BUNDLE=true; AUTO_BUILD=true; shift 1 ;;
+        --install-mode) INSTALL_MODE="$2"; shift 2 ;;
+        --customer-registry) CUSTOMER_REGISTRY="$2"; shift 2 ;;
         --pull-secret) IMAGE_PULL_SECRET="$2"; shift 2 ;;
         --docker-server) DOCKER_SERVER="$2"; shift 2 ;;
         --docker-username) DOCKER_USERNAME="$2"; shift 2 ;;
@@ -56,6 +61,8 @@ while [[ "$#" -gt 0 ]]; do
             echo "  -p, --push           Automatically push the Docker image without prompting"
             echo "  -x, --multi-platform Build and push for multiple architectures (linux/amd64, arm64, etc.)"
             echo "  -o, --olm            Generate and build an OLM bundle for the operator (implies -b)"
+            echo "  --install-mode <mode> OLM install mode: OwnNamespace (default), AllNamespaces, SingleNamespace, MultiNamespace"
+            echo "  --customer-registry <prefix>  Customer private registry prefix (e.g., artifactory.example.com/myrepo)"
             echo "  --pull-secret <name> Name of an existing imagePullSecret on the cluster (injected into manager spec)"
             echo "  --docker-server <url>  Registry URL for pull secret creation (default: docker.io)"
             echo "  --docker-username <u>  Registry username — generates setup-credentials.sh in the package"
@@ -66,6 +73,16 @@ while [[ "$#" -gt 0 ]]; do
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
     esac
 done
+
+# Validate --install-mode value
+case "$INSTALL_MODE" in
+    AllNamespaces|OwnNamespace|SingleNamespace|MultiNamespace) ;;
+    *)
+        echo "ERROR: Invalid --install-mode value '$INSTALL_MODE'."
+        echo "       Valid values: AllNamespaces, OwnNamespace, SingleNamespace, MultiNamespace"
+        exit 1
+        ;;
+esac
 
 # Check if we only need to clean
 if [ "$CLEAN_ONLY" = true ]; then
@@ -139,6 +156,15 @@ else
     OPERATOR_SDK="operator-sdk"
 fi
 
+# Ensure yq is available (used for reliable YAML patching of OLM CSV)
+if ! command -v yq &> /dev/null; then
+    echo "ERROR: yq command not found in PATH."
+    echo "Please install yq (https://github.com/mikefarah/yq) to proceed."
+    echo "  macOS:  brew install yq"
+    echo "  Linux:  snap install yq  or  wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 && chmod +x /usr/local/bin/yq"
+    exit 1
+fi
+
 echo ""
 echo "[1/4] Scaffolding new Operator SDK Project in ${OUTPUT_DIR}..."
 mkdir -p "${OUTPUT_DIR}"
@@ -146,6 +172,19 @@ cd "${OUTPUT_DIR}"
 
 ${OPERATOR_SDK} init --domain="${API_DOMAIN}" --repo="${GO_MODULE}"
 ${OPERATOR_SDK} create api --group="operator" --version="v1alpha1" --kind="KServeRawMode" --resource=true --controller=true
+
+# Patch installModes in the base CSV so it is preserved as source-of-truth.
+# NOTE: make bundle regenerates installModes from operator-sdk defaults (AllNamespaces=true),
+# so we ALSO patch the bundle CSV after make bundle runs (see below). yq is used for
+# reliable YAML surgery — awk line-counting is fragile against format changes.
+echo "Configuring OLM installMode to: ${INSTALL_MODE}"
+Base_CSV=$(find "${OUTPUT_DIR}/config/manifests/bases" -name "*.clusterserviceversion.yaml" 2>/dev/null | head -1)
+if [ -n "$Base_CSV" ]; then
+    INSTALL_MODE="${INSTALL_MODE}" yq -i '.spec.installModes[] |= (.supported = (.type == env(INSTALL_MODE)))' "$Base_CSV"
+    echo "Base CSV installModes patched: only '${INSTALL_MODE}' set to supported: true"
+else
+    echo "WARNING: Could not find base ClusterServiceVersion YAML to patch installModes."
+fi
 
 # Handle Trusted Chain Certificate Injection
 if [ -n "$TRUST_CERT_PATH" ]; then
@@ -299,6 +338,38 @@ if [ "$GEN_OLM_BUNDLE" = true ]; then
 
     echo "Running 'make bundle IMG=${IMAGE_TAG}'..."
     make bundle IMG="${IMAGE_TAG}"
+
+    # IMPORTANT: 'make bundle' calls 'operator-sdk generate bundle' which regenerates
+    # the installModes section from operator-sdk defaults (AllNamespaces=true), overwriting
+    # the base CSV patch above. We must re-patch the final bundle CSV with yq here.
+    BUNDLE_CSV=$(find "${OUTPUT_DIR}/bundle/manifests" -name "*.clusterserviceversion.yaml" 2>/dev/null | head -1)
+    if [ -n "$BUNDLE_CSV" ]; then
+        INSTALL_MODE="${INSTALL_MODE}" yq -i '.spec.installModes[] |= (.supported = (.type == env(INSTALL_MODE)))' "$BUNDLE_CSV"
+        echo "Bundle CSV installModes patched: only '${INSTALL_MODE}' set to supported: true"
+        # Verify
+        echo "  Verification:"
+        yq '.spec.installModes[]' "$BUNDLE_CSV"
+
+        # If --customer-registry is set, also rewrite the operator image ref inside the bundle CSV.
+        # IMPORTANT: this must happen BEFORE the bundle docker image is built, since the CSV is
+        # baked into the bundle image. Without this, OLM always deploys the operator pod using
+        # the original build-registry image (e.g., docker.io/...) instead of the customer registry.
+        if [ -n "${CUSTOMER_REGISTRY}" ]; then
+            CUST_IMAGE_SHORTNAME="${IMAGE_TAG##*/}"       # e.g. kserve-raw-operator:v200
+            CUST_OPERATOR_IMAGE="${CUSTOMER_REGISTRY}/${CUST_IMAGE_SHORTNAME}"
+            echo "Rewriting operator image in bundle CSV for customer registry:"
+            echo "  ${IMAGE_TAG} → ${CUST_OPERATOR_IMAGE}"
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+                sed -i '' "s|${IMAGE_TAG}|${CUST_OPERATOR_IMAGE}|g" "$BUNDLE_CSV"
+            else
+                sed -i "s|${IMAGE_TAG}|${CUST_OPERATOR_IMAGE}|g" "$BUNDLE_CSV"
+            fi
+            echo "  Bundle CSV operator image updated."
+        fi
+    else
+        echo "WARNING: Could not find bundle ClusterServiceVersion YAML to patch installModes."
+    fi
+
     BUNDLE_IMG="${IMAGE_TAG}-bundle"
     
     if [[ "$BUILD_CHOICE" =~ ^[Yy]$ ]]; then
@@ -362,6 +433,125 @@ mkdir -p "${PACKAGE_DIR}"
 cd config/manager && ../../bin/kustomize edit set image controller="${IMAGE_TAG}"
 cd ../../
 bin/kustomize build config/default > "${PACKAGE_DIR}/operator-deployment.yaml"
+
+# If a customer registry is provided, rewrite all image references in the deployment
+# manifests so the customer pulls from their own private registry, not the build registry.
+# The image name and tag are preserved; only the registry prefix is swapped.
+if [ -n "${CUSTOMER_REGISTRY}" ]; then
+    IMAGE_SHORTNAME="${IMAGE_TAG##*/}"          # e.g. kserve-raw-operator:v1
+    CUSTOMER_IMAGE="${CUSTOMER_REGISTRY}/${IMAGE_SHORTNAME}"
+    BUNDLE_SHORTNAME="${IMAGE_TAG##*/}-bundle"  # e.g. kserve-raw-operator:v1-bundle
+    CUSTOMER_BUNDLE="${CUSTOMER_REGISTRY}/${BUNDLE_SHORTNAME}"
+
+    echo "Rewriting image references for customer registry: ${CUSTOMER_REGISTRY}"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' "s|${IMAGE_TAG}|${CUSTOMER_IMAGE}|g" "${PACKAGE_DIR}/operator-deployment.yaml"
+    else
+        sed -i "s|${IMAGE_TAG}|${CUSTOMER_IMAGE}|g" "${PACKAGE_DIR}/operator-deployment.yaml"
+    fi
+
+    # Generate mirror-images.sh — customer runs this once to copy images from the
+    # source registry into their private registry using skopeo.
+    # Only the operator and bundle images are mirrored; no FBC/catalog image is needed
+    # because 'operator-sdk run bundle' creates a temporary catalog automatically.
+    cat > "${PACKAGE_DIR}/mirror-images.sh" <<MIRROR_EOF
+#!/bin/bash
+# =============================================================================
+# mirror-images.sh — Mirror operator images to your private registry
+#
+# Run this ONCE before deploying to copy images from the source registry into
+# your private registry.
+#
+# Requires: skopeo  (sudo dnf install skopeo  /  brew install skopeo)
+# =============================================================================
+set -e
+
+SRC_OPERATOR="${IMAGE_TAG}"
+DST_OPERATOR="${CUSTOMER_IMAGE}"
+
+SRC_BUNDLE="${IMAGE_TAG}-bundle"
+DST_BUNDLE="${CUSTOMER_BUNDLE}"
+
+echo "Mirroring operator image..."
+skopeo copy docker://\${SRC_OPERATOR} docker://\${DST_OPERATOR}
+
+if skopeo inspect docker://\${SRC_BUNDLE} &>/dev/null; then
+    echo "Mirroring OLM bundle image..."
+    skopeo copy docker://\${SRC_BUNDLE} docker://\${DST_BUNDLE}
+fi
+
+echo ""
+echo "Done. All images are now available at ${CUSTOMER_REGISTRY}"
+MIRROR_EOF
+    chmod +x "${PACKAGE_DIR}/mirror-images.sh"
+    echo "Generated mirror-images.sh — customer runs this with skopeo before deploying."
+
+    # Generate deploy-bundle.sh — customer-facing install script with two paths:
+    # OPTION A: OLM via 'operator-sdk run bundle' — uses the bundle image directly.
+    #   operator-sdk creates a temporary CatalogSource under the hood automatically.
+    #   No opm, no FBC image, and no CatalogSource YAML needed by the customer.
+    # OPTION B: Direct 'kubectl apply' — no OLM required at all.
+    if [ "${GEN_OLM_BUNDLE}" = true ]; then
+        cat > "${PACKAGE_DIR}/deploy-bundle.sh" <<DEPLOY_EOF
+#!/bin/bash
+# =============================================================================
+# deploy-bundle.sh — Install the KServe Raw Operator
+#
+# OPTION A — OLM bundle install (recommended when OLM is available)
+#   Uses 'operator-sdk run bundle' which automatically creates a temporary
+#   CatalogSource on the cluster. No opm, no FBC image, no CatalogSource
+#   YAML needed.
+#   Prerequisites: OLM installed (operator-sdk olm install)
+#   To uninstall: operator-sdk cleanup ${TARGET_DIR_NAME}
+#
+# OPTION B — Direct manifest install (no OLM required)
+#   Standard kubectl apply. Simpler but bypasses OLM lifecycle management.
+#
+# Usage: bash deploy-bundle.sh [pull-secret-name]
+# =============================================================================
+
+BUNDLE_IMAGE="${CUSTOMER_BUNDLE}"
+PULL_SECRET="\${1:-}"
+
+echo "================================================================="
+echo " KServe Raw Operator — Deployment"
+echo "================================================================="
+echo "  A) OLM bundle  : operator-sdk run bundle (recommended)"
+echo "  B) Direct YAML : kubectl apply -f operator-deployment.yaml"
+echo "================================================================="
+read -p "Enter choice [A/B]: " CHOICE
+
+case "\${CHOICE^^}" in
+  A)
+    echo ""
+    echo "Installing via OLM bundle: \${BUNDLE_IMAGE}"
+    if [ -n "\${PULL_SECRET}" ]; then
+        operator-sdk run bundle "\${BUNDLE_IMAGE}" --pull-secret-name "\${PULL_SECRET}"
+    else
+        operator-sdk run bundle "\${BUNDLE_IMAGE}"
+    fi
+    echo ""
+    echo "Operator installed via OLM."
+    echo "To uninstall: operator-sdk cleanup ${TARGET_DIR_NAME}"
+    ;;
+  B)
+    echo ""
+    echo "Installing via direct manifest..."
+    kubectl apply -f operator-deployment.yaml
+    echo ""
+    echo "Operator deployed. Apply your CR when ready:"
+    echo "  kubectl apply -f kserve-rawmode.yaml"
+    ;;
+  *)
+    echo "Invalid choice. Exiting."
+    exit 1
+    ;;
+esac
+DEPLOY_EOF
+        chmod +x "${PACKAGE_DIR}/deploy-bundle.sh"
+        echo "Generated deploy-bundle.sh — customer runs this to install via OLM bundle or direct manifest."
+    fi
+fi
 
 # Generate a sample Custom Resource to easily test the deployment later
 cp "${SCRIPT_DIR}/kserve-operator-base/kserve-rawmode.yaml.tmpl" "${PACKAGE_DIR}/kserve-rawmode.yaml"

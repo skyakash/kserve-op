@@ -109,6 +109,7 @@ If you have Operator Lifecycle Manager installed, you can deploy the operator as
 
 ```bash
 # Run the bundle (pass your pull secret if images are on a private registry)
+# Note: the bundle runs with InstallMode=OwnNamespace by default (operator manages only its own namespace)
 operator-sdk run bundle <your-bundle-image-tag> \
   --pull-secret-name docker-pull-secret
 ```
@@ -178,15 +179,13 @@ Once the `kserve` namespace has populated and all controller manager pods indica
      http://sklearn-iris-predictor.default.svc.cluster.local/v1/models/sklearn-iris:predict
    ```
 
-   **Expected Result**: `{"predictions": [1, 1]}`
+   **Expected Result**: `{"predictions":[1]}`
 
 ---
 
 ## Alternative: Air-Gapped / Offline Model Test
 
 If your cluster cannot reach `gs://` (Google Cloud Storage) to download model weights, the standard `sklearn-iris` test above will fail. Use this PVC-based offline alternative instead.
-
-Detailed instructions and alternative approaches (like Custom Containers) can be found in `06-sample-model/air-gapped-examples.md`.
 
 ### 1. Create a local PersistentVolumeClaim
 ```bash

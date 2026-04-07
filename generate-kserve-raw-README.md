@@ -22,7 +22,7 @@ If you are missing the required tools, you can install them using the following 
 brew install kustomize python curl
 ```
 
-**Linux (Ubuntu/Debian):**
+**Linux — Ubuntu / Debian:**
 ```bash
 sudo apt update
 sudo apt install python3 curl -y
@@ -30,9 +30,10 @@ curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack
 sudo mv kustomize /usr/local/bin/
 ```
 
-**Linux (RHEL/CentOS/Fedora):**
+**Linux — RHEL / CentOS / Fedora (x86_64):**
 ```bash
-sudo dnf install python3 curl -y
+sudo dnf install -y python3 python3-pip curl
+pip3 install pyyaml
 curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
 sudo mv kustomize /usr/local/bin/
 ```

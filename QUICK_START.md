@@ -9,11 +9,24 @@ Two paths depending on what you're doing:
 ## Part A: Builder — Build & Publish the Operator
 
 ### Prerequisites
-- `go` v1.21+, `make`, `docker`, `operator-sdk` v1.42+, `kubectl`, `python3 + pyyaml`
+
+Supported build environments: **macOS** and **RHEL/Linux x86_64**.
+
+| Tool | macOS | RHEL/Linux |
+|---|---|---|
+| Go v1.21+ | `brew install go` | [go.dev/dl](https://go.dev/dl) tarball |
+| Operator SDK v1.42+ | `brew install operator-sdk` | Binary from GitHub releases |
+| Docker v20.10+ | Docker Desktop | `dnf install docker-ce` or see [docs.docker.com/engine/install/rhel](https://docs.docker.com/engine/install/rhel/) |
+| yq v4+ | `brew install yq` | `sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 && sudo chmod +x /usr/local/bin/yq` |
+| kubectl | `brew install kubectl` | [kubernetes.io/docs/tasks/tools](https://kubernetes.io/docs/tasks/tools/) |
+| Kustomize v5+ | `brew install kustomize` | `curl -s .../install_kustomize.sh \| bash` |
+| python3 + pyyaml | `brew install python && pip3 install pyyaml` | `dnf install -y python3 python3-pip && pip3 install pyyaml` |
+
+> See [generate-kserve-operator-README.md](./generate-kserve-operator-README.md#installing-prerequisites) for exact copy-paste install commands per platform.
 
 ### Step 1 — Extract KServe raw manifests
 ```bash
-cd /Users/akashdeo/kserve-op
+# Run from the kserve-op workspace directory
 ./generate-kserve-raw.sh -t p-kserve-raw
 ```
 
@@ -24,13 +37,18 @@ cd /Users/akashdeo/kserve-op
   -m github.com/akashdeo/kserve-operator \
   -d akashdeo.com \
   -s p-kserve-raw \
-  -i docker.io/akashneha/kserve-raw-operator:v156 \
+  -i docker.io/akashneha/kserve-raw-operator:v300 \
   --docker-server docker.io \
   --docker-username akashneha \
   --docker-password <your-token> \
-  --pull-secret docker-pull-secret \
+  --pull-secret dockerhub-creds \
+  --install-mode OwnNamespace \
   -b -p -o
 ```
+
+> **`--install-mode`** controls OLM operator install scope. Valid values: `OwnNamespace` (default — operator only manages its own namespace), `AllNamespaces`, `SingleNamespace`, `MultiNamespace`.
+
+> **Private registry?** Add `--customer-registry <registry-prefix>` to rewrite all image references in the output package and generate `mirror-images.sh` (skopeo-based image copy) and `deploy-bundle.sh` (interactive install helper) in `p-kserve-operator-package/`.
 
 This outputs two directories:
 - `p-kserve-operator/` — the compiled Go operator project
@@ -59,11 +77,13 @@ bash setup-credentials.sh
 
 ### Step 3 — Deploy the operator
 
-**Option A: OLM Bundle (recommended)**
+**Option A: OLM Bundle (recommended, `InstallMode: OwnNamespace`)**
 ```bash
-operator-sdk run bundle docker.io/akashneha/kserve-raw-operator:v156-bundle \
-  --pull-secret-name docker-pull-secret
+operator-sdk run bundle docker.io/akashneha/kserve-raw-operator:v300-bundle \
+  --pull-secret-name dockerhub-creds
 ```
+
+> For a separate/local registry (to emulate a customer environment), push the bundle image there first and pass that image tag instead.
 
 **Option B: Direct manifests (no OLM needed — skip Step 1)**
 ```bash
