@@ -24,6 +24,17 @@ Supported build environments: **macOS** and **RHEL/Linux x86_64**.
 
 > See [generate-kserve-operator-README.md](./generate-kserve-operator-README.md#installing-prerequisites) for exact copy-paste install commands per platform.
 
+### Cleaning Up / Starting Fresh
+
+If you are re-running the build (e.g. after a cluster reset), clean both generated directories first:
+
+```bash
+./generate-kserve-operator.sh -c p-kserve-operator   # removes p-kserve-operator/ and p-kserve-operator-package/
+./generate-kserve-raw.sh -c p-kserve-raw              # removes p-kserve-raw/
+```
+
+---
+
 ### Step 1 — Extract KServe raw manifests
 ```bash
 # Run from the kserve-op workspace directory
@@ -147,7 +158,7 @@ EOF
 curl -sL https://storage.googleapis.com/kfserving-examples/models/sklearn/1.0/model/model.joblib -o model.joblib
 
 # Mount the PVC to a temporary pod
-kubectl run model-loader --image=curlimages/curl --restart=Never --overrides='{"spec":{"volumes":[{"name":"v","persistentVolumeClaim":{"claimName":"offline-models-pvc"}}],"containers":[{"name":"model-loader","image":"curlimages/curl","command":["sleep","3600"],"volumeMounts":[{"name":"v","mountPath":"/mnt/pvc"}]}]}}'
+kubectl run model-loader --image=busybox --restart=Never --overrides='{"spec":{"volumes":[{"name":"v","persistentVolumeClaim":{"claimName":"offline-models-pvc"}}],"containers":[{"name":"model-loader","image":"busybox","command":["sleep","3600"],"volumeMounts":[{"name":"v","mountPath":"/mnt/pvc"}]}]}}'
 
 # Copy the file inside
 kubectl wait --for=condition=Ready pod/model-loader
