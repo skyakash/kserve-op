@@ -83,19 +83,34 @@ If the operator will be deployed to a customer environment with a **private regi
   -b -p -o
 ```
 
-> ⚠️ `--docker-username/password` should be the **customer registry** credentials (not the builder's). These are embedded into the generated `setup-credentials.sh` so the customer cluster can pull images from their own registry.
+> ⚠️ `--docker-username/password` in the generator command embeds the **secret name** only. Actual credential values are **never embedded** in generated scripts — they are provided at runtime via `--user`/`--pass` CLI args or interactive prompts.
 
 The package will contain two additional files:
-- `mirror-images.sh` — run **once** on any machine with skopeo + access to both registries. Copies images from the source registry → customer registry.
-- `deploy-bundle.sh` — interactive installer for the customer (prompts OLM bundle or direct manifests).
+- `mirror-images.sh` — copies images from the source registry to the customer registry (3 modes: online, archive, load)
+- `deploy-bundle.sh` — interactive installer for the customer (OLM bundle or direct manifests)
 
 **Deployer steps for customer registry:**
+
+*Option A — Online (both registries accessible from one machine):*
 ```bash
 cd p-kserve-operator-package
-bash mirror-images.sh              # copy images: source → customer registry (needs skopeo)
+bash mirror-images.sh --dest-user <customer-user> --dest-pass <customer-token>
 operator-sdk olm install           # once per cluster
-bash setup-credentials.sh          # creates pull secret for customer registry
-bash deploy-bundle.sh              # interactive deploy (uses customer registry images)
+bash setup-credentials.sh --user <customer-user> --pass <customer-token>
+bash deploy-bundle.sh              # interactive: choose OLM bundle or direct YAML
+```
+
+*Option B — Offline / Air-gapped (no direct registry access on customer machine):*
+```bash
+# On a machine with internet access (builder side):
+bash mirror-images.sh --archive    # saves images/operator.tar + images/bundle.tar
+# Transfer the images/ directory and the entire package folder to the customer machine
+
+# On the customer (air-gapped) machine:
+bash mirror-images.sh --load --dest-user <customer-user> --dest-pass <customer-token>
+operator-sdk olm install
+bash setup-credentials.sh --user <customer-user> --pass <customer-token>
+bash deploy-bundle.sh
 ```
 
 This outputs two directories:
@@ -120,6 +135,10 @@ kubectl get pods -n olm   # wait until all pods are Running
 
 ### Step 2 — Set up image pull credentials *(skip if images are public)*
 ```bash
+# With CLI args:
+bash setup-credentials.sh --user <registry-user> --pass <registry-token>
+
+# Or interactive (will prompt for username and password):
 bash setup-credentials.sh
 ```
 

@@ -454,40 +454,116 @@ if [ -n "${CUSTOMER_REGISTRY}" ]; then
     # source registry into their private registry using skopeo.
     # Only the operator and bundle images are mirrored; no FBC/catalog image is needed
     # because 'operator-sdk run bundle' creates a temporary catalog automatically.
-    cat > "${PACKAGE_DIR}/mirror-images.sh" <<MIRROR_EOF
+    cat > "${PACKAGE_DIR}/mirror-images.sh" <<'MIRROR_EOF'
 #!/bin/bash
 # =============================================================================
 # mirror-images.sh — Mirror operator images to your private registry
 #
-# Run this ONCE before deploying to copy images from the source registry into
-# your private registry.
+# MODES:
+#   Default (online)  — direct registry-to-registry copy via skopeo.
+#                       Requires network access to BOTH source and dest.
 #
-# Requires: skopeo  (sudo dnf install skopeo  /  brew install skopeo)
+#   --archive         — Save source images as tar archives in ./images/
+#                       for offline shipping to an air-gapped environment.
+#
+#   --load            — Load tar archives from ./images/ and push them
+#                       to the destination registry. Run on the customer
+#                       machine after transferring the archives.
+#
+# CREDENTIALS:
+#   --dest-user <u>   — Destination registry username
+#   --dest-pass <p>   — Destination registry password / token
+#                       (prompted interactively if not provided)
+#
+# Requires: skopeo  (brew install skopeo  /  sudo dnf install -y skopeo)
 # =============================================================================
 set -e
 
-SRC_OPERATOR="${IMAGE_TAG}"
-DST_OPERATOR="${CUSTOMER_IMAGE}"
+SRC_OPERATOR="__SRC_OPERATOR__"
+DST_OPERATOR="__DST_OPERATOR__"
+SRC_BUNDLE="__SRC_BUNDLE__"
+DST_BUNDLE="__DST_BUNDLE__"
 
-SRC_BUNDLE="${IMAGE_TAG}-bundle"
-DST_BUNDLE="${CUSTOMER_BUNDLE}"
+MODE="online"
+DEST_USER=""
+DEST_PASS=""
 
-# Destination registry credentials (embedded from --docker-username/--docker-password)
-# Source registry credentials are read from your local Docker credential store.
-DEST_CREDS="${DOCKER_USERNAME}:${DOCKER_PASSWORD}"
-DEST_CREDS_ARG=\$([ -n "${DOCKER_USERNAME}" ] && echo "--dest-creds ${DOCKER_USERNAME}:${DOCKER_PASSWORD}" || echo "")
+# Parse CLI args
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --archive)    MODE="archive"; shift ;;
+        --load)       MODE="load"; shift ;;
+        --dest-user)  DEST_USER="$2"; shift 2 ;;
+        --dest-pass)  DEST_PASS="$2"; shift 2 ;;
+        *) echo "Unknown arg: $1"; exit 1 ;;
+    esac
+done
 
-echo "Mirroring operator image..."
-skopeo copy --override-os linux \${DEST_CREDS_ARG} docker://\${SRC_OPERATOR} docker://\${DST_OPERATOR}
-
-if skopeo inspect --override-os linux docker://\${SRC_BUNDLE} &>/dev/null; then
-    echo "Mirroring OLM bundle image..."
-    skopeo copy --override-os linux \${DEST_CREDS_ARG} docker://\${SRC_BUNDLE} docker://\${DST_BUNDLE}
+# Prompt for credentials if not provided (not needed for --archive only)
+if [[ "${MODE}" != "archive" ]]; then
+    if [[ -z "${DEST_USER}" ]]; then
+        read -rp "Destination registry username: " DEST_USER
+    fi
+    if [[ -z "${DEST_PASS}" ]]; then
+        read -rsp "Destination registry password/token: " DEST_PASS; echo
+    fi
 fi
 
-echo ""
-echo "Done. All images are now available at ${CUSTOMER_REGISTRY}"
+DEST_CREDS_ARG=""
+[[ -n "${DEST_USER}" ]] && DEST_CREDS_ARG="--dest-creds ${DEST_USER}:${DEST_PASS}"
+
+case "${MODE}" in
+  archive)
+    echo "Saving images to ./images/ (for offline transfer)..."
+    mkdir -p images
+    echo "  Saving operator image..."
+    skopeo copy --override-os linux docker://${SRC_OPERATOR} oci-archive:images/operator.tar
+    echo "  Saving OLM bundle image..."
+    skopeo copy --override-os linux docker://${SRC_BUNDLE} oci-archive:images/bundle.tar
+    echo ""
+    echo "Done. Transfer the 'images/' directory to the customer machine, then run:"
+    echo "  bash mirror-images.sh --load --dest-user <user> --dest-pass <token>"
+    ;;
+
+  load)
+    echo "Loading and pushing images from ./images/ to destination registry..."
+    echo "  Pushing operator image to ${DST_OPERATOR}..."
+    skopeo copy --override-os linux ${DEST_CREDS_ARG} oci-archive:images/operator.tar docker://${DST_OPERATOR}
+    echo "  Pushing OLM bundle image to ${DST_BUNDLE}..."
+    skopeo copy --override-os linux ${DEST_CREDS_ARG} oci-archive:images/bundle.tar docker://${DST_BUNDLE}
+    echo ""
+    echo "Done. Images are now available in the destination registry."
+    ;;
+
+  online)
+    echo "Mirroring images directly between registries..."
+    echo "  Mirroring operator image..."
+    skopeo copy --override-os linux ${DEST_CREDS_ARG} docker://${SRC_OPERATOR} docker://${DST_OPERATOR}
+    if skopeo inspect --override-os linux docker://${SRC_BUNDLE} &>/dev/null; then
+        echo "  Mirroring OLM bundle image..."
+        skopeo copy --override-os linux ${DEST_CREDS_ARG} docker://${SRC_BUNDLE} docker://${DST_BUNDLE}
+    fi
+    echo ""
+    echo "Done. All images are now available in the destination registry."
+    ;;
+esac
 MIRROR_EOF
+    # Inject image references (these are generator-time values, not runtime shell vars)
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' \
+            -e "s|__SRC_OPERATOR__|${IMAGE_TAG}|g" \
+            -e "s|__DST_OPERATOR__|${CUSTOMER_IMAGE}|g" \
+            -e "s|__SRC_BUNDLE__|${IMAGE_TAG}-bundle|g" \
+            -e "s|__DST_BUNDLE__|${CUSTOMER_BUNDLE}|g" \
+            "${PACKAGE_DIR}/mirror-images.sh"
+    else
+        sed -i \
+            -e "s|__SRC_OPERATOR__|${IMAGE_TAG}|g" \
+            -e "s|__DST_OPERATOR__|${CUSTOMER_IMAGE}|g" \
+            -e "s|__SRC_BUNDLE__|${IMAGE_TAG}-bundle|g" \
+            -e "s|__DST_BUNDLE__|${CUSTOMER_BUNDLE}|g" \
+            "${PACKAGE_DIR}/mirror-images.sh"
+    fi
     chmod +x "${PACKAGE_DIR}/mirror-images.sh"
     echo "Generated mirror-images.sh — customer runs this with skopeo before deploying."
 
@@ -581,84 +657,106 @@ else
     sed -i "s/TARGET_DIR_NAME/${TARGET_DIR_NAME}/g" "${PACKAGE_DIR}/README.md"
 fi
 
-# Generate setup-credentials.sh if docker credentials were provided.
-# This script is meant to be run ONCE on the cluster BEFORE deploying the operator.
-# It creates the imagePullSecret in all namespaces that need it.
-# Namespaces are created by: default (always exists), p-kserve-operator-system (by operator-deployment.yaml),
-# olm/operators (by 'operator-sdk olm install'), kserve/cert-manager (by the operator's reconcile loop).
-if [ -n "${DOCKER_USERNAME}" ] && [ -n "${DOCKER_PASSWORD}" ]; then
-    SECRET_NAME="${IMAGE_PULL_SECRET:-docker-pull-secret}"
-    cat > "${PACKAGE_DIR}/setup-credentials.sh" << EOF
+# Generate setup-credentials.sh — always generated.
+# Credentials are provided at runtime (CLI args or interactive prompt).
+# This ensures no credentials are embedded in the generated package.
+SECRET_NAME="${IMAGE_PULL_SECRET:-dockerhub-creds}"
+cat > "${PACKAGE_DIR}/setup-credentials.sh" <<'CREDS_EOF'
 #!/bin/bash
 # =============================================================================
 # setup-credentials.sh — Create registry pull secrets on the cluster
 #
-# Run this ONCE before deploying the operator. It creates the pull secret
-# in all namespaces that need it at the time of first install.
-#
-# Namespace lifecycle:
-#   default                      — always exists
-#   ${TARGET_DIR_NAME}-system    — created by: kubectl apply -f operator-deployment.yaml
-#   olm, operators               — created by: operator-sdk olm install
-#   kserve, cert-manager         — created by: the operator's reconcile loop (auto)
+# Run this ONCE before deploying the operator.
 #
 # USAGE:
-#   For direct manifest deploy:
-#     1. kubectl apply -f operator-deployment.yaml   (creates ${TARGET_DIR_NAME}-system)
-#     2. bash setup-credentials.sh
-#     (operator auto-creates KServeRawMode CR — KServe installation begins)
+#   With CLI args:
+#     bash setup-credentials.sh --user <registry-user> --pass <token> \
+#                               [--server docker.io]
 #
-#   For OLM bundle deploy:
-#     1. operator-sdk olm install                    (creates olm, operators)
-#     2. bash setup-credentials.sh
-#     3. operator-sdk run bundle <your-bundle-image> --pull-secret-name ${SECRET_NAME}
-#     (operator auto-creates KServeRawMode CR — KServe installation begins)
+#   Interactive (prompted if args not provided):
+#     bash setup-credentials.sh
+#
+# Namespace lifecycle:
+#   default          — always exists
+#   *-system         — created by: kubectl apply -f operator-deployment.yaml
+#   olm, operators   — created by: operator-sdk olm install
+#   kserve           — created automatically by the operator reconcile loop
 # =============================================================================
-
 set -e
 
-SECRET_NAME="${SECRET_NAME}"
-DOCKER_SERVER="${DOCKER_SERVER}"
-DOCKER_USERNAME="${DOCKER_USERNAME}"
-DOCKER_PASSWORD="${DOCKER_PASSWORD}"
+SECRET_NAME="__SECRET_NAME__"
+DOCKER_SERVER="docker.io"
+DOCKER_USERNAME=""
+DOCKER_PASSWORD=""
+SYSTEM_NS="__SYSTEM_NS__"
+
+# Parse CLI args
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --user)   DOCKER_USERNAME="$2"; shift 2 ;;
+        --pass)   DOCKER_PASSWORD="$2"; shift 2 ;;
+        --server) DOCKER_SERVER="$2"; shift 2 ;;
+        *) echo "Unknown arg: $1"; exit 1 ;;
+    esac
+done
+
+# Prompt interactively if not provided
+if [[ -z "${DOCKER_USERNAME}" ]]; then
+    read -rp "Registry username: " DOCKER_USERNAME
+fi
+if [[ -z "${DOCKER_PASSWORD}" ]]; then
+    read -rsp "Registry password/token: " DOCKER_PASSWORD; echo
+fi
 
 create_secret() {
-    local ns=\$1
-    echo "Creating pull secret '\${SECRET_NAME}' in namespace '\${ns}'..."
-    kubectl create secret docker-registry "\${SECRET_NAME}" \\
-        --docker-server="\${DOCKER_SERVER}" \\
-        --docker-username="\${DOCKER_USERNAME}" \\
-        --docker-password="\${DOCKER_PASSWORD}" \\
-        --namespace="\${ns}" \\
+    local ns=$1
+    echo "Creating pull secret '${SECRET_NAME}' in namespace '${ns}'..."
+    kubectl create secret docker-registry "${SECRET_NAME}" \
+        --docker-server="${DOCKER_SERVER}" \
+        --docker-username="${DOCKER_USERNAME}" \
+        --docker-password="${DOCKER_PASSWORD}" \
+        --namespace="${ns}" \
         --dry-run=client -o yaml | kubectl apply -f -
 }
 
-# Always-available namespaces
+# Always-available namespace
 create_secret default
 
-# Operator system namespace — created by operator-deployment.yaml
-if kubectl get ns ${TARGET_DIR_NAME}-system &>/dev/null; then
-    create_secret ${TARGET_DIR_NAME}-system
+# Operator system namespace (only present for direct manifest deploy)
+if kubectl get ns "${SYSTEM_NS}" &>/dev/null; then
+    create_secret "${SYSTEM_NS}"
 else
-    echo "Namespace '${TARGET_DIR_NAME}-system' not found — apply operator-deployment.yaml first, then re-run this script."
+    echo "Namespace '${SYSTEM_NS}' not found — apply operator-deployment.yaml first to create it (direct deploy only)."
 fi
 
-# OLM namespaces — created by 'operator-sdk olm install'
+# OLM namespaces — present after 'operator-sdk olm install'
 for ns in olm operators; do
-    if kubectl get ns \${ns} &>/dev/null; then
-        create_secret \${ns}
+    if kubectl get ns "${ns}" &>/dev/null; then
+        create_secret "${ns}"
     else
-        echo "Namespace '\${ns}' not found — run 'operator-sdk olm install' first if using OLM."
+        echo "Namespace '${ns}' not found — run 'operator-sdk olm install' first if using OLM bundle deploy."
     fi
 done
 
 echo ""
-echo "Pull secret '\${SECRET_NAME}' configured. Namespaces kserve and cert-manager"
-echo "will be created automatically by the operator reconcile loop — no action needed."
-EOF
-    chmod +x "${PACKAGE_DIR}/setup-credentials.sh"
-    echo "Generated setup-credentials.sh in the customer package (run this on your cluster before deploying)."
+echo "Pull secret '${SECRET_NAME}' configured."
+echo "Namespaces 'kserve' and 'cert-manager' are created automatically by the operator — no action needed."
+CREDS_EOF
+# Inject generator-time values (secret name, system namespace)
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    sed -i '' \
+        -e "s|__SECRET_NAME__|${SECRET_NAME}|g" \
+        -e "s|__SYSTEM_NS__|${TARGET_DIR_NAME}-system|g" \
+        "${PACKAGE_DIR}/setup-credentials.sh"
+else
+    sed -i \
+        -e "s|__SECRET_NAME__|${SECRET_NAME}|g" \
+        -e "s|__SYSTEM_NS__|${TARGET_DIR_NAME}-system|g" \
+        "${PACKAGE_DIR}/setup-credentials.sh"
 fi
+chmod +x "${PACKAGE_DIR}/setup-credentials.sh"
+echo "Generated setup-credentials.sh in the customer package (credentials provided at runtime — not embedded)."
+
 
 if [ "$GEN_OLM_BUNDLE" = true ]; then
     if [[ "$OSTYPE" == "darwin"* ]]; then
