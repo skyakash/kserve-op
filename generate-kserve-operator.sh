@@ -472,12 +472,17 @@ DST_OPERATOR="${CUSTOMER_IMAGE}"
 SRC_BUNDLE="${IMAGE_TAG}-bundle"
 DST_BUNDLE="${CUSTOMER_BUNDLE}"
 
-echo "Mirroring operator image..."
-skopeo copy docker://\${SRC_OPERATOR} docker://\${DST_OPERATOR}
+# Destination registry credentials (embedded from --docker-username/--docker-password)
+# Source registry credentials are read from your local Docker credential store.
+DEST_CREDS="${DOCKER_USERNAME}:${DOCKER_PASSWORD}"
+DEST_CREDS_ARG=\$([ -n "${DOCKER_USERNAME}" ] && echo "--dest-creds ${DOCKER_USERNAME}:${DOCKER_PASSWORD}" || echo "")
 
-if skopeo inspect docker://\${SRC_BUNDLE} &>/dev/null; then
+echo "Mirroring operator image..."
+skopeo copy --override-os linux \${DEST_CREDS_ARG} docker://\${SRC_OPERATOR} docker://\${DST_OPERATOR}
+
+if skopeo inspect --override-os linux docker://\${SRC_BUNDLE} &>/dev/null; then
     echo "Mirroring OLM bundle image..."
-    skopeo copy docker://\${SRC_BUNDLE} docker://\${DST_BUNDLE}
+    skopeo copy --override-os linux \${DEST_CREDS_ARG} docker://\${SRC_BUNDLE} docker://\${DST_BUNDLE}
 fi
 
 echo ""
@@ -521,7 +526,7 @@ echo "  B) Direct YAML : kubectl apply -f operator-deployment.yaml"
 echo "================================================================="
 read -p "Enter choice [A/B]: " CHOICE
 
-case "\${CHOICE^^}" in
+case "$(echo "\${CHOICE}" | tr '[:lower:]' '[:upper:]')" in
   A)
     echo ""
     echo "Installing via OLM bundle: \${BUNDLE_IMAGE}"
