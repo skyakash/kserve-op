@@ -45,13 +45,10 @@ If you are re-running the build (e.g. after a cluster reset), clean both generat
 ```bash
 ./generate-kserve-operator.sh \
   -t p-kserve-operator \
-  -m github.com/akashdeo/kserve-operator \
+  -m github.com/akashdeo/p-kserve-operator \
   -d akashdeo.com \
   -s p-kserve-raw \
   -i docker.io/akashneha/kserve-raw-operator:v300 \
-  --docker-server docker.io \
-  --docker-username akashneha \
-  --docker-password <your-token> \
   --pull-secret dockerhub-creds \
   --install-mode OwnNamespace \
   -b -p -o
@@ -74,16 +71,13 @@ If the operator will be deployed to a customer environment with a **private regi
   -d akashdeo.com \
   -s p-kserve-raw \
   -i docker.io/akashneha/kserve-raw-operator:v300 \
-  --docker-server docker.io \
-  --docker-username <customer-registry-user> \
-  --docker-password <customer-registry-token> \
   --pull-secret dockerhub-creds \
   --customer-registry docker.io/<customer-account> \
   --install-mode OwnNamespace \
   -b -p -o
 ```
 
-> ⚠️ `--docker-username/password` in the generator command embeds the **secret name** only. Actual credential values are **never embedded** in generated scripts — they are provided at runtime via `--user`/`--pass` CLI args or interactive prompts.
+> ℹ️ `--pull-secret` sets the pull secret name used in the generated scripts. Credentials themselves are **never embedded** — they are provided at runtime by the customer via `setup-credentials.sh` and `mirror-images.sh`.
 
 The package will contain two additional files:
 - `mirror-images.sh` — copies images from the source registry to the customer registry (3 modes: online, archive, load)
@@ -146,11 +140,13 @@ bash setup-credentials.sh
 
 **Option A: OLM Bundle (recommended, `InstallMode: OwnNamespace`)**
 ```bash
+# Standard flow (images on your registry):
 operator-sdk run bundle docker.io/akashneha/kserve-raw-operator:v300-bundle \
   --pull-secret-name dockerhub-creds
-```
 
-> For a separate/local registry (to emulate a customer environment), push the bundle image there first and pass that image tag instead.
+# Customer registry flow (if you have deploy-bundle.sh):
+bash deploy-bundle.sh dockerhub-creds
+```
 
 **Option B: Direct manifests (no OLM needed — skip Step 1)**
 ```bash

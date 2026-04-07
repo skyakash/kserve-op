@@ -115,9 +115,6 @@ The following command was used to generate a fully multi-platform, OLM-ready ope
   -d akashdeo.com \
   -s p-kserve-raw \
   -i docker.io/akashneha/kserve-raw-operator:v300 \
-  --docker-server docker.io \
-  --docker-username akashneha \
-  --docker-password dckr_pat_xxx \
   --pull-secret dockerhub-creds \
   --install-mode OwnNamespace \
   -b -p -o
@@ -202,7 +199,8 @@ If you generated an OLM bundle using the `-o` flag, you can install the operator
 
 ```bash
 # 1. Set up pull credentials (skip if images are public)
-bash setup-credentials.sh
+bash setup-credentials.sh --user <registry-user> --pass <registry-token>
+# Or interactively: bash setup-credentials.sh
 
 # 2. Deploy the bundle (installs the Operator via OLM)
 operator-sdk run bundle docker.io/akashneha/kserve-raw-operator:v300-bundle \
@@ -238,29 +236,44 @@ This generates three additional files in `p-kserve-operator-package/`:
 
 | File | Purpose |
 |---|---|
-| `mirror-images.sh` | Run **once** on a machine with skopeo: copies operator + bundle images from source registry → private registry |
-| `deploy-bundle.sh` | Interactive installer for the customer: choose OLM bundle or direct kubectl apply |
-| `operator-deployment.yaml` | Pre-rewritten with `localhost:5001/myrepo/...` image references |
+| `mirror-images.sh` | Copies operator + bundle images from source registry → customer registry. Supports 3 modes: **online** (direct), **archive** (save to tar), **load** (push from tar). |
+| `deploy-bundle.sh` | Interactive installer: prompts whether to use OLM bundle or direct `kubectl apply`. |
+| `setup-credentials.sh` | Creates pull secrets. Accepts `--user`/`--pass` CLI args or prompts interactively. |
 
-**Workflow for simulating a customer environment with a local registry:**
+**Deployer workflow — Option A (online, both registries on one machine):**
 ```bash
-# 1. Start a local registry container
-docker run -d -p 5001:5000 --name local-registry registry:2
+cd p-kserve-operator-package
 
-# 2. Push operator and bundle images to the local registry
-docker tag docker.io/akashneha/kserve-raw-operator:v300 localhost:5001/myrepo/kserve-raw-operator:v300
-docker push localhost:5001/myrepo/kserve-raw-operator:v300
+# 1. Mirror images to customer registry
+bash mirror-images.sh --dest-user <customer-user> --dest-pass <customer-token>
 
-docker tag docker.io/akashneha/kserve-raw-operator:v300-bundle localhost:5001/myrepo/kserve-raw-operator:v300-bundle
-docker push localhost:5001/myrepo/kserve-raw-operator:v300-bundle
+# 2. Install OLM (once per cluster)
+operator-sdk olm install
 
-# 3. Configure Kubernetes to trust the local registry (for Docker Desktop)
-# The registry must be reachable from inside the cluster as 'host.docker.internal:5001'
-# (Since localhost:5001 on your Mac maps to docker-desktop VM via host.docker.internal)
+# 3. Set up pull credentials
+bash setup-credentials.sh --user <customer-user> --pass <customer-token>
 
-# 4. Run the generated deploy-bundle.sh from inside p-kserve-operator-package/
-bash deploy-bundle.sh
+# 4. Deploy
+bash deploy-bundle.sh dockerhub-creds
 ```
+
+**Deployer workflow — Option B (offline/air-gapped, images shipped as archives):**
+```bash
+# --- On a machine WITH internet access (builder side) ---
+cd p-kserve-operator-package
+bash mirror-images.sh --archive
+# Produces: images/operator.tar  +  images/bundle.tar
+# Transfer the entire package folder (including images/) to the customer machine
+
+# --- On the customer (air-gapped) machine ---
+cd p-kserve-operator-package
+bash mirror-images.sh --load --dest-user <customer-user> --dest-pass <customer-token>
+operator-sdk olm install
+bash setup-credentials.sh --user <customer-user> --pass <customer-token>
+bash deploy-bundle.sh dockerhub-creds
+```
+
+> **Note:** `mirror-images.sh` prompts interactively for credentials if `--dest-user`/`--dest-pass` are not provided. No credentials are embedded in the generated scripts.
 
 ## Monitoring Install Progress
 
