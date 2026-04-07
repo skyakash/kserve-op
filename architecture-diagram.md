@@ -22,43 +22,58 @@ flowchart TD
     RawPkg -->|Source input| OperScript
 
     subgraph Phase2["Phase 2 — generate-kserve-operator.sh"]
-        OperScript[["generate-kserve-operator.sh\n-t p-kserve-operator -s p-kserve-raw\n-i docker.io/akashneha/...:v51\n--pull-secret dockerhub-creds -x -o"]]:::script
+        OperScript[["generate-kserve-operator.sh\n-t p-kserve-operator -s p-kserve-raw\n-i docker.io/akashneha/...:v300\n--pull-secret dockerhub-creds\n--install-mode OwnNamespace -b -p -o"]]:::script
         OperProj["Go Operator Project\n(p-kserve-operator/)"]:::package
-        DockerImg["Container Image\ndocker.io/akashneha/kserve-raw-operator:v51\n(multi-platform: amd64/arm64)"]:::package
-        StandalonePkg["Standalone Package\n(p-kserve-operator-package/)\noperator-deployment.yaml\nkserve-rawmode.yaml\n06-sample-model/"]:::package
-        OLMPkg["OLM Bundle Image\ndocker.io/akashneha/kserve-raw-operator:v51-bundle"]:::package
+        DockerImg["Container Image\ndocker.io/akashneha/kserve-raw-operator:v300\n(linux/arm64 or linux/amd64)"]:::package
+        StandalonePkg["Standalone Package\n(p-kserve-operator-package/)\noperator-deployment.yaml\nkserve-rawmode.yaml\nsetup-credentials.sh\n06-sample-model/\n[mirror-images.sh]  ← with --customer-registry\n[deploy-bundle.sh]  ← with --customer-registry"]:::package
+        OLMPkg["OLM Bundle Image\ndocker.io/akashneha/kserve-raw-operator:v300-bundle"]:::package
 
         OperScript -->|operator-sdk scaffold| OperProj
-        RawPkg -.->|Embedded into assets/| OperProj
-        OperProj -->|docker buildx push| DockerImg
+        RawPkg -..->|Embedded into assets/| OperProj
+        OperProj -->|docker build + push| DockerImg
         OperProj -->|kustomize build| StandalonePkg
         OperProj -->|make bundle + push| OLMPkg
     end
 
+    subgraph CustomerReg["Customer Registry (optional — --customer-registry flag)"]
+        MirrorOnline["mirror-images.sh (online)\nskopeo copy src → customer registry"]:::script
+        MirrorArchive["mirror-images.sh --archive\nskopeo save → images/*.tar"]:::script
+        MirrorLoad["mirror-images.sh --load\nskopeo copy tar → customer registry"]:::script
+        MirrorArchive -->|Transfer archives| MirrorLoad
+    end
+
+    StandalonePkg -.->|if --customer-registry| MirrorOnline
+    StandalonePkg -.->|if --customer-registry| MirrorArchive
+
     subgraph Deploy["Deployment Options"]
         OLM["OLM pre-installed\noperator-sdk olm install"]:::prereq
+        Creds["setup-credentials.sh\nCreates pull secrets in all namespaces"]:::script
         OLM -->|prerequisite| OLMPkg
-        OLMPkg -->|operator-sdk run bundle| K8sCluster
+        Creds -->|pull secret ready| OLMPkg
+        OLMPkg -->|operator-sdk run bundle\nor deploy-bundle.sh| K8sCluster
         StandalonePkg -->|kubectl apply| K8sCluster
     end
 
+    MirrorOnline -->|customer registry images ready| Creds
+    MirrorLoad -->|customer registry images ready| Creds
+
     subgraph K8s["Target Kubernetes Cluster"]
         K8sCluster[("Kubernetes Cluster")]:::k8s
-        OperPod["Operator Controller Pod\n(pulls from dockerhub-creds secret)"]:::k8s
-        CR["kubectl apply kserve-rawmode.yaml\nKServeRawMode CR"]:::k8s
+        OperPod["Operator Controller Pod\n(pulls via pull secret)"]:::k8s
+        AutoCR["Auto-Init: Operator creates\nKServeRawMode CR automatically\non first startup"]:::k8s
         KServeStack["Active KServe Stack\ncert-manager + KServe CRDs + RBAC\nKServe Controller + ServingRuntimes"]:::k8s
         IFSvc["InferenceService\nsklearn-iris predictor"]:::k8s
 
         K8sCluster --> OperPod
-        OperPod -->|Watches| CR
-        CR -->|Triggers reconcile| KServeStack
+        OperPod -->|Creates on startup| AutoCR
+        AutoCR -->|Triggers reconcile| KServeStack
         KServeStack -->|Ready for| IFSvc
     end
 ```
 
 ## 2. Operator Reconciliation Loop (Internal)
 
-Once the `KServeRawMode` CR is applied, the operator runs the following sequential reconciliation loop:
+Once the operator starts, it **automatically creates** a `KServeRawMode` CR and runs the following sequential reconciliation loop:
 
 ```mermaid
 sequenceDiagram
@@ -67,7 +82,8 @@ sequenceDiagram
     participant Ctrl as Operator Controller
     participant Assets as Embedded Assets
 
-    User->>K8s: kubectl apply kserve-rawmode.yaml
+    Note over Ctrl: Operator starts — auto-creates KServeRawMode CR
+    Ctrl->>K8s: Create KServeRawMode "kserve-rawmode" (if not exists)
     K8s->>Ctrl: Reconcile(KServeRawMode)
     Ctrl->>Assets: Read 01-cert-manager/
     Ctrl->>K8s: Server-Side Apply cert-manager
@@ -77,22 +93,27 @@ sequenceDiagram
     Ctrl->>K8s: Server-Side Apply RBAC + ensure kserve namespace
     Ctrl->>Assets: Read 04-kserve-core/
     Ctrl->>K8s: Server-Side Apply KServe Controller
-    Note over Ctrl: Wait 15s for webhooks to stabilise
+    Note over Ctrl: Poll for pod readiness (prevents webhook race)
     Ctrl->>Assets: Read 05-kserve-runtimes/
     Ctrl->>K8s: Server-Side Apply ClusterServingRuntimes
-    K8s-->>User: KServe fully operational
+    K8s-->>User: KServeRawMode phase: Ready
 ```
+
+> No manual `kubectl apply -f kserve-rawmode.yaml` is required. The operator auto-initialises KServe on startup.
 
 ## 3. End-to-End Test Validation Summary
 
-The following was verified in a live test on a fresh Docker Desktop Kubernetes cluster:
+The following was verified in a live test on a fresh Docker Desktop Kubernetes cluster (both standard and customer-registry archive flows):
 
 | Step | Command | Result |
 |------|---------|--------|
 | Extract manifests | `./generate-kserve-raw.sh -t p-kserve-raw` | ✅ All 5 manifest dirs created |
-| Generate operator | `./generate-kserve-operator.sh ... -x -o` | ✅ Operator project + OLM bundle built |
-| Install OLM | `operator-sdk olm install` | ✅ v0.28.0 installed |
-| Deploy bundle | `operator-sdk run bundle ...v51-bundle` | ✅ CSV Phase: Succeeded |
-| Apply CR | `kubectl apply -f ...kserve-rawmode.yaml` | ✅ KServe 2/2 Running |
-| Test inference | `curl .../sklearn-iris:predict` | ✅ `{"predictions":[1,1]}` |
+| Generate operator | `./generate-kserve-operator.sh ... -b -p -o` | ✅ Operator project + OLM bundle built and pushed |
+| Archive images (customer) | `bash mirror-images.sh --archive` | ✅ images/operator.tar + images/bundle.tar created |
+| Load images (customer) | `bash mirror-images.sh --load --user ... --pass ...` | ✅ Images pushed to customer registry |
+| Install OLM | `operator-sdk olm install` | ✅ v0.28.0 installed, all pods Running |
+| Set up credentials | `bash setup-credentials.sh --user ... --pass ...` | ✅ Pull secret created in default/olm/operators |
+| Deploy bundle | `bash deploy-bundle.sh` | ✅ CSV Phase: Succeeded |
+| Watch KServe install | `kubectl get kserverawmode -A -w` | ✅ Phase: Ready (~60s), no manual CR apply needed |
+| Test inference | `curl .../sklearn-iris:predict` | ✅ `{"predictions":[1]}` |
 | Cleanup | `./generate-kserve-operator.sh -c p-kserve-operator` | ✅ Workspace restored |
