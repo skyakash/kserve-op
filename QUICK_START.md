@@ -77,34 +77,69 @@ If the operator will be deployed to a customer environment with a **private regi
   -b -p -o
 ```
 
-> ℹ️ `--pull-secret` sets the pull secret name used in the generated scripts. Credentials themselves are **never embedded** — they are provided at runtime by the customer via `setup-credentials.sh` and `mirror-images.sh`.
+> ℹ️ `--pull-secret` sets the pull secret name baked into the generated scripts. Credentials are **never embedded** — they are provided at runtime by the customer.
 
-The package will contain two additional files:
+The generated package (`p-kserve-operator-package/`) contains three helper scripts:
 - `mirror-images.sh` — copies images from the source registry to the customer registry (3 modes: online, archive, load)
-- `deploy-bundle.sh` — interactive installer for the customer (OLM bundle or direct manifests)
+- `setup-credentials.sh` — creates pull secrets in all required namespaces
+- `deploy-bundle.sh` — interactive installer (OLM bundle or direct `kubectl apply`)
 
-**Deployer steps for customer registry:**
+Both `mirror-images.sh` and `setup-credentials.sh` use the same `--user`/`--pass` arguments and will prompt interactively if not provided.
 
-*Option A — Online (both registries accessible from one machine):*
+---
+
+**Option A — Online (both registries accessible from one machine):**
+
+Run all commands from the package directory:
 ```bash
 cd p-kserve-operator-package
-bash mirror-images.sh --dest-user <customer-user> --dest-pass <customer-token>
-operator-sdk olm install           # once per cluster
+
+# 1. Copy images from source registry → customer registry
+bash mirror-images.sh --user <customer-user> --pass <customer-token>
+
+# 2. Install OLM (once per cluster)
+operator-sdk olm install
+kubectl get pods -n olm   # wait until all pods are Running
+
+# 3. Create pull secrets on the cluster
 bash setup-credentials.sh --user <customer-user> --pass <customer-token>
-bash deploy-bundle.sh              # interactive: choose OLM bundle or direct YAML
+
+# 4. Deploy the operator
+bash deploy-bundle.sh
+# For private clusters that require explicit pull secrets:
+# bash deploy-bundle.sh dockerhub-creds
 ```
 
-*Option B — Offline / Air-gapped (no direct registry access on customer machine):*
-```bash
-# On a machine with internet access (builder side):
-bash mirror-images.sh --archive    # saves images/operator.tar + images/bundle.tar
-# Transfer the images/ directory and the entire package folder to the customer machine
+---
 
-# On the customer (air-gapped) machine:
-bash mirror-images.sh --load --dest-user <customer-user> --dest-pass <customer-token>
+**Option B — Offline / Air-gapped (images shipped as tar archives):**
+
+```bash
+# ── BUILDER MACHINE (has internet access) ──────────────────────────
+cd p-kserve-operator-package
+
+# Save images to local tar archives
+bash mirror-images.sh --archive
+# Produces: images/operator.tar + images/bundle.tar
+
+# Transfer the ENTIRE package folder (including images/) to the customer machine
+# ── CUSTOMER MACHINE (air-gapped) ──────────────────────────────────
+cd p-kserve-operator-package
+
+# 1. Load and push archives to customer registry
+bash mirror-images.sh --load --user <customer-user> --pass <customer-token>
+
+# 2. Install OLM (once per cluster)
 operator-sdk olm install
+kubectl get pods -n olm   # wait until all pods are Running
+
+# 3. Create pull secrets on the cluster
 bash setup-credentials.sh --user <customer-user> --pass <customer-token>
+
+# 4. Deploy the operator
 bash deploy-bundle.sh
+# For private clusters that require explicit pull secrets:
+# bash deploy-bundle.sh dockerhub-creds
 ```
 
 This outputs two directories:

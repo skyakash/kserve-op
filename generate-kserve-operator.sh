@@ -491,10 +491,10 @@ DEST_PASS=""
 # Parse CLI args
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --archive)    MODE="archive"; shift ;;
-        --load)       MODE="load"; shift ;;
-        --dest-user)  DEST_USER="$2"; shift 2 ;;
-        --dest-pass)  DEST_PASS="$2"; shift 2 ;;
+        --archive)  MODE="archive"; shift ;;
+        --load)     MODE="load"; shift ;;
+        --user)     DEST_USER="$2"; shift 2 ;;
+        --pass)     DEST_PASS="$2"; shift 2 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
@@ -502,10 +502,10 @@ done
 # Prompt for credentials if not provided (not needed for --archive only)
 if [[ "${MODE}" != "archive" ]]; then
     if [[ -z "${DEST_USER}" ]]; then
-        read -rp "Destination registry username: " DEST_USER
+        read -rp "Registry username: " DEST_USER
     fi
     if [[ -z "${DEST_PASS}" ]]; then
-        read -rsp "Destination registry password/token: " DEST_PASS; echo
+        read -rsp "Registry password/token: " DEST_PASS; echo
     fi
 fi
 
@@ -521,8 +521,8 @@ case "${MODE}" in
     echo "  Saving OLM bundle image..."
     skopeo copy --override-os linux docker://${SRC_BUNDLE} oci-archive:images/bundle.tar
     echo ""
-    echo "Done. Transfer the 'images/' directory to the customer machine, then run:"
-    echo "  bash mirror-images.sh --load --dest-user <user> --dest-pass <token>"
+    echo "Done. Transfer the 'images/' directory and this package folder to the customer machine, then run:"
+    echo "  bash mirror-images.sh --load --user <user> --pass <token>"
     ;;
 
   load)
