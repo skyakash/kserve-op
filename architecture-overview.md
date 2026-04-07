@@ -126,3 +126,61 @@ stateDiagram-v2
     
     SteadyStateWatch --> [*] : KServe Ready for InferenceServices
 ```
+
+---
+
+## Phase 4: Actor Sequence Diagram (End-to-End Execution)
+
+This sequence diagram details the chronological interaction between the Builders, Customers, Scripts, and Kubernetes.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Builder
+    participant Script as Generator Scripts
+    participant RegBuild as Builder Registry
+    actor Customer
+    participant RegCust as Customer Registry
+    participant K8s as Target Cluster
+    participant Operator as KServe Operator
+
+    Builder->>Script: Run generate-kserve-raw.sh
+    Script-->>Builder: Raw manifests (p-kserve-raw/)
+    Builder->>Script: Run generate-kserve-operator.sh
+    Script->>RegBuild: Push base operator & bundle
+    Script-->>Builder: Standalone package (p-kserve-operator-package/)
+    
+    Builder-->>Customer: Hand over package (Archive or Direct Transfer)
+    
+    Customer->>RegCust: Run mirror-images.sh (Copy images via skopeo)
+    Customer->>K8s: Run setup-credentials.sh (Create Pull Secrets)
+    Customer->>K8s: Run deploy-bundle.sh (Install OLM Bundle)
+    
+    K8s->>RegCust: Pull Operator & Bundle Images
+    K8s-->>Operator: Start Controller Pod
+    
+    Operator->>K8s: Auto-create default KServeRawMode CR
+    Operator->>K8s: Reconcile (Apply CertManager, CRDs, etc.)
+    K8s-->>Customer: KServe Stack is Operational!
+```
+
+---
+
+## Phase 5: Flow Diagram (Manifest Transformation Data Pipeline)
+
+This flowchart highlights the inner workings behind how the original KServe YAML files are modified, compiled into Go code, and shipped in the Docker image.
+
+```mermaid
+flowchart LR
+    classDef file fill:#fff8e1,stroke:#ffa000,stroke-width:2px,color:#000
+    classDef process fill:#e1f5fe,stroke:#0288d1,stroke-width:2px,color:#000
+    classDef active fill:#e8f5e9,stroke:#388e3c,stroke-width:2px,color:#000
+
+    GH[GitHub KServe Release]:::file -- Downloaded via script --> Extractor[Kustomize Build]:::process
+    Extractor -- Removes Istio/Knative --> Raw[Raw YAMLs]:::file
+    Raw -- Patched for RawDeployment --> PatchedRaw[Functional Raw Manifests]:::file
+    
+    PatchedRaw -- Injected as String Literals --> GoCode[Operator bindata (Go)]:::process
+    GoCode -- Compiled --> Bin[Operator Binary]:::file
+    Bin -- Containerized --> Img[Operator Linux Docker Image]:::active
+```
