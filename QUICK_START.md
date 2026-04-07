@@ -59,7 +59,44 @@ If you are re-running the build (e.g. after a cluster reset), clean both generat
 
 > **`--install-mode`** controls OLM operator install scope. Valid values: `OwnNamespace` (default — operator only manages its own namespace), `AllNamespaces`, `SingleNamespace`, `MultiNamespace`.
 
-> **Private registry?** Add `--customer-registry <registry-prefix>` to rewrite all image references in the output package and generate `mirror-images.sh` (skopeo-based image copy) and `deploy-bundle.sh` (interactive install helper) in `p-kserve-operator-package/`.
+### Step 2 (Alt) — Customer / Private Registry
+
+If the operator will be deployed to a customer environment with a **private registry** (Artifactory, Harbor, ECR, Docker Hub org, etc.), add `--customer-registry`. This rewrites all image references in the output package and generates two extra helper scripts.
+
+> **Additional prerequisite:** [`skopeo`](https://github.com/containers/skopeo) — used by `mirror-images.sh` to copy images between registries.
+> - macOS: `brew install skopeo`
+> - RHEL/Linux: `sudo dnf install -y skopeo`
+
+```bash
+./generate-kserve-operator.sh \
+  -t p-kserve-operator \
+  -m github.com/akashdeo/p-kserve-operator \
+  -d akashdeo.com \
+  -s p-kserve-raw \
+  -i docker.io/akashneha/kserve-raw-operator:v300 \
+  --docker-server docker.io \
+  --docker-username <customer-registry-user> \
+  --docker-password <customer-registry-token> \
+  --pull-secret dockerhub-creds \
+  --customer-registry docker.io/<customer-account> \
+  --install-mode OwnNamespace \
+  -b -p -o
+```
+
+> ⚠️ `--docker-username/password` should be the **customer registry** credentials (not the builder's). These are embedded into the generated `setup-credentials.sh` so the customer cluster can pull images from their own registry.
+
+The package will contain two additional files:
+- `mirror-images.sh` — run **once** on any machine with skopeo + access to both registries. Copies images from the source registry → customer registry.
+- `deploy-bundle.sh` — interactive installer for the customer (prompts OLM bundle or direct manifests).
+
+**Deployer steps for customer registry:**
+```bash
+cd p-kserve-operator-package
+bash mirror-images.sh              # copy images: source → customer registry (needs skopeo)
+operator-sdk olm install           # once per cluster
+bash setup-credentials.sh          # creates pull secret for customer registry
+bash deploy-bundle.sh              # interactive deploy (uses customer registry images)
+```
 
 This outputs two directories:
 - `p-kserve-operator/` — the compiled Go operator project

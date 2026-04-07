@@ -18,6 +18,7 @@ Before running the script, ensure you have the following tools installed on your
 | Docker | v20.10+ | Builds and pushes container images |
 | yq | v4+ | Patches OLM bundle CSV `installModes` |
 | Kustomize | v5.0+ | Generates deployment manifests (auto-downloaded; global install recommended for air-gapped) |
+| skopeo | v1.0+ | **Optional** — copies images between registries when using `--customer-registry` |
 | OLM | v0.28+ | Required **only** on the target cluster when using `-o` flag |
 
 ### Installing Prerequisites
@@ -25,6 +26,7 @@ Before running the script, ensure you have the following tools installed on your
 **macOS (Homebrew):**
 ```bash
 brew install go operator-sdk yq kustomize make
+brew install skopeo   # optional — only needed for --customer-registry flag
 # Docker: install Docker Desktop from https://docs.docker.com/desktop/mac/
 ```
 
@@ -54,6 +56,9 @@ kustomize version   # verify
 
 # Make (usually pre-installed on RHEL)
 sudo dnf install -y make
+
+# skopeo (optional — only needed for --customer-registry flag)
+sudo dnf install -y skopeo
 
 # Docker Engine on RHEL
 # See: https://docs.docker.com/engine/install/rhel/

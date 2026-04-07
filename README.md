@@ -26,6 +26,7 @@ Before running the generation scripts, ensure the following dependencies are ins
 ```bash
 brew install go operator-sdk yq kustomize python kubectl
 pip3 install pyyaml
+brew install skopeo   # optional — only needed for --customer-registry flag
 # Docker: install Docker Desktop from https://docs.docker.com/desktop/mac/
 ```
 
@@ -52,6 +53,7 @@ sudo mv kustomize /usr/local/bin/
 # Python + pyyaml, kubectl, Docker
 sudo dnf install -y python3 python3-pip
 pip3 install pyyaml
+sudo dnf install -y skopeo   # optional — only needed for --customer-registry flag
 # kubectl: https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/
 # Docker Engine: https://docs.docker.com/engine/install/rhel/
 ```
