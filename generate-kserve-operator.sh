@@ -222,8 +222,11 @@ echo "[2/4] Copying KServe Extracted Manifests into Controller Assets..."
 ASSETS_DIR="${OUTPUT_DIR}/internal/controller/assets"
 mkdir -p "${ASSETS_DIR}"
 
-# Copy all the numbered manifest directories, skipping the sample model and installer
-cp -r "${SCRIPT_DIR}/${MANIFEST_DIR}/01-cert-manager" "${ASSETS_DIR}/"
+# Copy all the numbered manifest directories.
+# NOTE: 01-cert-manager is intentionally excluded — cert-manager is now a
+# cluster pre-requisite that must be installed before deploying the operator.
+# The operator validates its presence at reconcile time and fails with a
+# clear error if it is absent.
 cp -r "${SCRIPT_DIR}/${MANIFEST_DIR}/02-kserve-crds" "${ASSETS_DIR}/"
 cp -r "${SCRIPT_DIR}/${MANIFEST_DIR}/03-kserve-rbac" "${ASSETS_DIR}/"
 cp -r "${SCRIPT_DIR}/${MANIFEST_DIR}/04-kserve-core" "${ASSETS_DIR}/"

@@ -1,3 +1,12 @@
+# PREREQUISITES (must be satisfied before applying this CR):
+#   1. cert-manager must be installed in the cluster.
+#      The operator will fail with a clear error if cert-manager CRDs are absent.
+#      Install: https://cert-manager.io/docs/installation/
+#      Verify:  kubectl get crds | grep cert-manager.io
+#
+#   2. The kserveNamespace must exist:
+#      kubectl create namespace kserve
+#
 apiVersion: operator.API_DOMAIN/v1alpha1
 kind: KServeRawMode
 metadata:

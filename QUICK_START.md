@@ -156,6 +156,21 @@ You only need the `*-package/` folder and `kubectl`/`operator-sdk` on your machi
 cd p-kserve-operator-package   # all commands below run from inside this folder
 ```
 
+### Step 0 — Verify cert-manager is installed *(pre-requisite)*
+
+> [!IMPORTANT]
+> The operator **does not install cert-manager**. It must be present in the cluster before deployment. The operator will enter `CertManagerNotFound` phase and surface a clear error if it is absent.
+
+```bash
+# Check cert-manager CRDs are registered
+kubectl get crds | grep cert-manager.io
+# Expected output should include: certificates.cert-manager.io, issuers.cert-manager.io, etc.
+
+# If not installed, install cert-manager first:
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
+kubectl wait --for=condition=Ready pods --all -n cert-manager --timeout=120s
+```
+
 ### Step 1 — Install OLM (once per cluster)
 ```bash
 operator-sdk olm install
@@ -238,14 +253,22 @@ kubectl get kserverawmode -A -w
 ```
 Expected progression:
 ```
-NAMESPACE   NAME             PHASE                   AGE
-default     kserve-rawmode   InstallingCertManager   5s
-default     kserve-rawmode   InstallingCRDs          25s
-default     kserve-rawmode   InstallingRBAC          27s
-default     kserve-rawmode   InstallingCore          28s
-default     kserve-rawmode   InstallingRuntimes      55s
-default     kserve-rawmode   Ready                   60s
+NAMESPACE   NAME             PHASE                    AGE
+default     kserve-rawmode   ValidatingCertManager    2s
+default     kserve-rawmode   InstallingCRDs           8s
+default     kserve-rawmode   InstallingRBAC           10s
+default     kserve-rawmode   InstallingCore           11s
+default     kserve-rawmode   InstallingRuntimes       38s
+default     kserve-rawmode   Ready                    43s
 ```
+
+If cert-manager is missing, the phase will show `CertManagerNotFound` and the operator logs will display:
+```
+ERROR cert-manager is required but was not found in the cluster ...
+      Please install cert-manager before deploying the KServe operator.
+      See: https://cert-manager.io/docs/installation/
+```
+Install cert-manager and the operator will automatically retry and proceed.
 
 ### Step 6 — Deploy and test the Iris inference model
 ```bash
