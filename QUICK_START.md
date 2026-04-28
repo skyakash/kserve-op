@@ -292,20 +292,73 @@ ERROR cert-manager is required but was not found in the cluster ...
 ```
 Install cert-manager and the operator will automatically retry and proceed.
 
-### Step 6 — Deploy and test the Iris inference model
+### Step 6 — Deploy and test the Iris inference model (in-cluster URL)
 ```bash
 kubectl apply -f 06-sample-model/sklearn-iris.yaml
 
 # Wait for predictor to be ready (~30s)
 kubectl get isvc sklearn-iris -w   # wait for READY=True
 
-# Test inference
+# Test inference via internal cluster URL (always works without ingress)
 kubectl run --rm -i curl-test --image=curlimages/curl --restart=Never -- \
   curl -s -H "Content-Type: application/json" \
   -d '{"instances":[[6.8,2.8,4.8,1.4]]}' \
   http://sklearn-iris-predictor.default.svc.cluster.local/v1/models/sklearn-iris:predict
 ```
 ✅ Expected: `{"predictions":[1]}`
+
+### Step 6b — *(Optional)* Test via external hostname (requires nginx-ingress)
+
+By default KServe disables Kubernetes Ingress creation. To use the external URL shown in `kubectl get isvc` (e.g. `http://sklearn-iris-default.example.com`), follow these steps.
+
+**Install nginx-ingress controller:**
+```bash
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.12.1/deploy/static/provider/cloud/deploy.yaml
+kubectl wait --for=condition=Ready pods -l app.kubernetes.io/component=controller -n ingress-nginx --timeout=120s
+```
+
+**Patch KServe to enable Ingress creation with nginx:**
+```bash
+kubectl get cm inferenceservice-config -n kserve -o json | python3 -c "
+import json, sys
+cm = json.load(sys.stdin)
+ingress = json.loads(cm['data']['ingress'])
+ingress['ingressClassName'] = 'nginx'
+ingress['disableIngressCreation'] = False
+cm['data']['ingress'] = json.dumps(ingress, indent=4)
+print(json.dumps(cm))
+" | kubectl apply -f -
+
+# Restart controller to pick up config change
+kubectl rollout restart deployment kserve-controller-manager -n kserve
+```
+
+**Add local DNS entry** (for Docker Desktop / local clusters):
+```bash
+sudo bash -c 'echo "127.0.0.1 sklearn-iris-default.example.com" >> /etc/hosts'
+```
+
+**Recreate the InferenceService** (so KServe creates the Ingress with the new config):
+```bash
+kubectl delete isvc sklearn-iris
+kubectl apply -f 06-sample-model/sklearn-iris.yaml
+kubectl get isvc sklearn-iris -w   # wait for READY=True
+```
+
+**Verify Ingress and test:**
+```bash
+kubectl get ingress -A
+# Expected:
+# NAMESPACE  NAME          CLASS  HOSTS                                    ADDRESS    PORTS  AGE
+# default    sklearn-iris  nginx  sklearn-iris-default.example.com,...     localhost  80     30s
+
+curl -s -H "Content-Type: application/json" \
+  -d '{"instances":[[6.8,2.8,4.8,1.4]]}' \
+  http://sklearn-iris-default.example.com/v1/models/sklearn-iris:predict
+```
+✅ Expected: `{"predictions":[1]}`
+
+> **Production note:** Replace `example.com` with your real domain and point DNS to the ingress load balancer IP/hostname. No `/etc/hosts` entry needed in production.
 
 ---
 
