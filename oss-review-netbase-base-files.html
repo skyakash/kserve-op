@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Open-Source Review: KServe Operator Images — netbase, base-files &amp; OLM Bundle</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      font-size: 13.5px;
+      line-height: 1.75;
+      color: #1a1d23;
+      background: #fff;
+      padding: 0;
+    }
+
+    /* ── Cover ── */
+    .cover {
+      background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 60%, #1a56db 100%);
+      color: #fff;
+      padding: 64px 72px 52px;
+      position: relative;
+      overflow: hidden;
+    }
+    .cover::before {
+      content: '';
+      position: absolute; top: -80px; right: -80px;
+      width: 340px; height: 340px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.04);
+    }
+    .cover::after {
+      content: '';
+      position: absolute; bottom: -60px; left: 40%;
+      width: 220px; height: 220px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.03);
+    }
+    .cover-badge {
+      display: inline-block;
+      background: rgba(255,255,255,0.12);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 20px;
+      padding: 4px 14px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 28px;
+      color: #93c5fd;
+    }
+    .cover h1 {
+      font-size: 30px;
+      font-weight: 700;
+      line-height: 1.2;
+      margin-bottom: 16px;
+      letter-spacing: -0.5px;
+    }
+    .cover h1 span { color: #60a5fa; }
+    .cover .subtitle {
+      font-size: 15px;
+      color: #94a3b8;
+      max-width: 520px;
+      margin-bottom: 36px;
+    }
+    .cover-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 28px;
+      border-top: 1px solid rgba(255,255,255,0.1);
+      padding-top: 24px;
+      margin-top: 4px;
+    }
+    .cover-meta-item { font-size: 12px; color: #94a3b8; }
+    .cover-meta-item strong { display: block; color: #e2e8f0; font-weight: 600; font-size: 13px; margin-bottom: 2px; }
+
+    /* ── Content ── */
+    .content { padding: 44px 72px 60px; }
+
+    /* ── Section ── */
+    .section { margin-bottom: 42px; }
+    .section-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: #0f172a;
+      margin-bottom: 14px;
+      padding-bottom: 10px;
+      border-bottom: 2px solid #e2e8f0;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .section-title .icon {
+      width: 28px; height: 28px;
+      border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+    .icon-blue  { background: #dbeafe; color: #1d4ed8; }
+    .icon-green { background: #dcfce7; color: #15803d; }
+    .icon-amber { background: #fef9c3; color: #854d0e; }
+    .icon-purple { background: #ede9fe; color: #6d28d9; }
+
+    /* ── Context box ── */
+    .context-box {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-left: 4px solid #1a56db;
+      border-radius: 8px;
+      padding: 18px 22px;
+      margin-bottom: 22px;
+      font-size: 13px;
+      color: #334155;
+    }
+    .context-box strong { color: #0f172a; }
+
+    code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11.5px;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      border-radius: 4px;
+      padding: 1px 6px;
+      color: #0f172a;
+    }
+
+    /* ── Package card ── */
+    .pkg-card {
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      overflow: hidden;
+      margin-bottom: 28px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+    }
+    .pkg-header {
+      padding: 16px 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .pkg-header.blue  { background: linear-gradient(90deg, #eff6ff, #dbeafe); border-bottom: 1px solid #bfdbfe; }
+    .pkg-header.green { background: linear-gradient(90deg, #f0fdf4, #dcfce7); border-bottom: 1px solid #bbf7d0; }
+    .pkg-name { font-size: 16px; font-weight: 700; color: #0f172a; font-family: 'JetBrains Mono', monospace; }
+    .pkg-desc { font-size: 12px; color: #64748b; margin-top: 2px; }
+    .license-badge {
+      font-size: 11.5px;
+      font-weight: 700;
+      padding: 4px 12px;
+      border-radius: 20px;
+      letter-spacing: 0.04em;
+    }
+    .badge-gpl { background: #fef9c3; color: #713f12; border: 1px solid #fde047; }
+
+    /* ── Fact table ── */
+    .fact-table { width: 100%; border-collapse: collapse; }
+    .fact-table td {
+      padding: 10px 16px;
+      font-size: 13px;
+      border-bottom: 1px solid #f1f5f9;
+      vertical-align: top;
+    }
+    .fact-table tr:last-child td { border-bottom: none; }
+    .fact-table .label {
+      width: 38%;
+      font-weight: 600;
+      color: #475569;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .fact-table .value { color: #1e293b; }
+
+    /* ── Verdict box ── */
+    .verdict {
+      border-radius: 10px;
+      padding: 16px 20px;
+      margin-top: 16px;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .verdict-info { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; }
+    .verdict-title { font-weight: 700; margin-bottom: 6px; font-size: 13.5px; }
+
+    /* ── Summary table ── */
+    .summary-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .summary-table th {
+      background: #0f172a;
+      color: #e2e8f0;
+      text-align: left;
+      padding: 11px 16px;
+      font-weight: 600;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .summary-table th:first-child { border-radius: 8px 0 0 0; }
+    .summary-table th:last-child  { border-radius: 0 8px 0 0; }
+    .summary-table td {
+      padding: 11px 16px;
+      border-bottom: 1px solid #f1f5f9;
+      vertical-align: top;
+    }
+    .summary-table tr:last-child td { border-bottom: none; }
+    .summary-table tr:nth-child(even) td { background: #f8fafc; }
+    .check { color: #16a34a; font-weight: 700; font-size: 14px; }
+    .cross { color: #dc2626; font-weight: 700; font-size: 14px; }
+
+    /* ── Obligations ── */
+    .obligation-list { list-style: none; padding: 0; }
+    .obligation-list li {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      padding: 10px 0;
+      border-bottom: 1px solid #f1f5f9;
+      font-size: 13px;
+    }
+    .obligation-list li:last-child { border-bottom: none; }
+    .ob-bullet {
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700;
+      margin-top: 1px;
+    }
+    .ob-required { background: #fef9c3; color: #713f12; }
+    .ob-notreq   { background: #dcfce7; color: #15803d; }
+
+    /* ── Recommendation ── */
+    .rec-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    .rec-item {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 16px 18px;
+    }
+    .rec-item-title {
+      font-weight: 700;
+      font-size: 13px;
+      color: #0f172a;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .rec-item p { font-size: 12.5px; color: #475569; line-height: 1.6; }
+
+    /* ── Footer ── */
+    .footer {
+      background: #f8fafc;
+      border-top: 1px solid #e2e8f0;
+      padding: 20px 72px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11.5px;
+      color: #94a3b8;
+    }
+    .footer .ai-credit {
+      display: flex; align-items: center; gap: 8px;
+      color: #64748b; font-weight: 500;
+    }
+    .ai-chip {
+      background: linear-gradient(90deg, #1e3a5f, #1a56db);
+      color: #fff;
+      font-size: 10.5px;
+      font-weight: 700;
+      padding: 3px 10px;
+      border-radius: 12px;
+      letter-spacing: 0.04em;
+    }
+
+    @media print {
+      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .cover { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .pkg-header { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ══ COVER ══ -->
+<div class="cover">
+  <div class="cover-badge">Open-Source Review Report</div>
+  <h1>Package Analysis: Both<br/>Generated <span>Operator Images</span></h1>
+  <p class="subtitle">An open-source license and usage review of all packages and artifacts present in both KServe Operator container images (<code style="background:rgba(255,255,255,0.1);border:none;color:#93c5fd">v302</code> operator image and <code style="background:rgba(255,255,255,0.1);border:none;color:#93c5fd">v302-bundle</code> OLM bundle image), prepared for the Open-Source Review Board.</p>
+  <div class="cover-meta">
+    <div class="cover-meta-item"><strong>Project</strong>KServe Raw Mode Operator</div>
+    <div class="cover-meta-item"><strong>Operator Image</strong><code style="background:rgba(255,255,255,0.1);border:none;color:#93c5fd">docker.io/akashneha/kserve-raw-operator:v302</code></div>
+    <div class="cover-meta-item"><strong>Bundle Image</strong><code style="background:rgba(255,255,255,0.1);border:none;color:#93c5fd">docker.io/akashneha/kserve-raw-operator:v302-bundle</code></div>
+    <div class="cover-meta-item"><strong>Date</strong>April 28, 2026</div>
+    <div class="cover-meta-item"><strong>Analyzed with</strong>Claude (Anthropic)</div>
+  </div>
+</div>
+
+<!-- ══ CONTENT ══ -->
+<div class="content">
+
+  <!-- 1. Context -->
+  <div class="section">
+    <div class="section-title">
+      <div class="icon icon-blue">🏗</div>
+      1 — Context: How These Packages Enter the Image
+    </div>
+    <div class="context-box">
+      The KServe operator binary is compiled with <strong>CGO_ENABLED=0</strong> (a fully static Go binary) and packaged using <strong><code>gcr.io/distroless/static:nonroot</code></strong> as the runtime base image. The operator itself contains no Debian packaging; however, the distroless image is constructed by Google from a curated subset of Debian packages. <code>netbase</code> and <code>base-files</code> are pulled in as <strong>transitive dependencies of the distroless build chain</strong> and materialise as read-only configuration files inside the container filesystem.<br/><br/>
+      <strong>Key point:</strong> No source code from either package is incorporated into the operator binary. No executable from either package runs inside the container. They exist solely as filesystem artifacts (e.g. <code>/etc/services</code>, <code>/etc/protocols</code>, <code>/etc/debian_version</code>).
+    </div>
+  </div>
+
+  <!-- 1b. Images Overview -->
+  <div class="section">
+    <div class="section-title">
+      <div class="icon icon-blue">🐳</div>
+      1b — Images Generated by This Project
+    </div>
+    <table class="summary-table">
+      <thead>
+        <tr>
+          <th>Image</th>
+          <th>Base</th>
+          <th>Purpose</th>
+          <th>Contains OS Packages?</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>kserve-raw-operator:v302</code></td>
+          <td><code>gcr.io/distroless/static:nonroot</code></td>
+          <td>Operator runtime — runs the Go controller manager binary</td>
+          <td><span class="check">✓</span> Yes — <code>netbase</code>, <code>base-files</code> (Debian, via distroless)</td>
+        </tr>
+        <tr>
+          <td><code>kserve-raw-operator:v302-bundle</code></td>
+          <td><code>scratch</code> (empty)</td>
+          <td>OLM bundle — carries YAML manifests consumed by OLM at install time</td>
+          <td><span class="cross">✗</span> None — zero OS packages</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 2. netbase -->
+  <div class="section">
+    <div class="section-title">
+      <div class="icon icon-blue">📦</div>
+      2 — Package: <code>netbase</code>
+    </div>
+
+    <div class="pkg-card">
+      <div class="pkg-header blue">
+        <div>
+          <div class="pkg-name">netbase</div>
+          <div class="pkg-desc">Basic TCP/IP networking infrastructure — configuration data files only</div>
+        </div>
+        <span class="license-badge badge-gpl">GPL-2.0-only</span>
+      </div>
+      <table class="fact-table">
+        <tr>
+          <td class="label">Purpose</td>
+          <td class="value">Provides networking configuration data files: <code>/etc/services</code>, <code>/etc/protocols</code>, <code>/etc/rpc</code>. These map well-known port numbers and protocol numbers to human-readable names.</td>
+        </tr>
+        <tr>
+          <td class="label">Version (distroless)</td>
+          <td class="value">6.4 (Debian Bookworm / debian12 variant)</td>
+        </tr>
+        <tr>
+          <td class="label">License (SPDX)</td>
+          <td class="value"><strong>GPL-2.0-only</strong> — GNU General Public License, version 2 only</td>
+        </tr>
+        <tr>
+          <td class="label">Copyright holders</td>
+          <td class="value">© 1994–1998 Peter Tobias · © 1998–2001 Anthony Towns · © 2002–2022 Marco d'Itri</td>
+        </tr>
+        <tr>
+          <td class="label">Source availability</td>
+          <td class="value">Fully public: <code>https://packages.debian.org/stable/netbase</code></td>
+        </tr>
+        <tr>
+          <td class="label">Modified by project?</td>
+          <td class="value"><strong>No.</strong> Used unmodified, exactly as distributed by Debian.</td>
+        </tr>
+        <tr>
+          <td class="label">Linked / compiled in?</td>
+          <td class="value"><strong>No.</strong> No code from netbase is compiled into the operator binary. It is a passive data file.</td>
+        </tr>
+        <tr>
+          <td class="label">Executable in container?</td>
+          <td class="value"><strong>No.</strong> netbase contains no executables — it is purely configuration data.</td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="verdict verdict-info">
+      <div class="verdict-title">🔍 Review Board Assessment — netbase</div>
+      GPL-2.0-only is a strong copyleft license; however, copyleft obligations are triggered by <em>distribution of derived works</em> — i.e., modifying and distributing the GPL-licensed source code itself. Shipping an unmodified Debian package as a data file inside a container image is equivalent to distributing a pre-built Debian system: the operator is not a derivative work of netbase. No source-code disclosure of the operator is required. The only obligation is attribution (referencing upstream Debian as the source), which the distroless project fulfils by embedding the <code>/usr/share/doc/netbase/copyright</code> file inside every image layer.
+    </div>
+  </div>
+
+  <!-- 3. base-files -->
+  <div class="section">
+    <div class="section-title">
+      <div class="icon icon-green">📦</div>
+      3 — Package: <code>base-files</code>
+    </div>
+
+    <div class="pkg-card">
+      <div class="pkg-header green">
+        <div>
+          <div class="pkg-name">base-files</div>
+          <div class="pkg-desc">Debian filesystem skeleton — directory structure and OS metadata files</div>
+        </div>
+        <span class="license-badge badge-gpl">GPL-2.0-or-later</span>
+      </div>
+      <table class="fact-table">
+        <tr>
+          <td class="label">Purpose</td>
+          <td class="value">Provides essential directory structure and OS identification files: <code>/etc/debian_version</code>, <code>/usr/share/common-licenses/</code>, <code>/etc/issue</code>, <code>/etc/motd</code>, and base directory skeleton.</td>
+        </tr>
+        <tr>
+          <td class="label">License (SPDX)</td>
+          <td class="value"><strong>GPL-2.0-or-later</strong> — GNU General Public License, version 2 or any later version</td>
+        </tr>
+        <tr>
+          <td class="label">Copyright holders</td>
+          <td class="value">© Software in the Public Interest, Inc. (the Debian non-profit organisation)</td>
+        </tr>
+        <tr>
+          <td class="label">Source availability</td>
+          <td class="value">Fully public: <code>https://packages.debian.org/stable/base-files</code></td>
+        </tr>
+        <tr>
+          <td class="label">Modified by project?</td>
+          <td class="value"><strong>No.</strong> Used unmodified, exactly as distributed by Debian.</td>
+        </tr>
+        <tr>
+          <td class="label">Linked / compiled in?</td>
+          <td class="value"><strong>No.</strong> No code from base-files is compiled into the operator binary.</td>
+        </tr>
+        <tr>
+          <td class="label">Executable in container?</td>
+          <td class="value"><strong>No.</strong> base-files contains no executables — it is directory structure and text files only.</td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="verdict verdict-info">
+      <div class="verdict-title">🔍 Review Board Assessment — base-files</div>
+      GPL-2.0-or-later with the same reasoning as netbase. The <code>-or-later</code> clause is more permissive than <code>-only</code> as it allows future GPL versions. base-files is a standard infrastructure package shipped with every Debian-based container image worldwide — its presence is universal and its compliance posture is well-established. No operator source disclosure is required. Attribution is embedded in the image via the standard Debian copyright mechanism.
+    </div>
+  </div>
+
+  <!-- 3b. Bundle image section -->
+  <div class="section">
+    <div class="section-title">
+      <div class="icon icon-green">📦</div>
+      3b — Image: <code>kserve-raw-operator:v302-bundle</code> (OLM Bundle)
+    </div>
+
+    <div class="pkg-card">
+      <div class="pkg-header green">
+        <div>
+          <div class="pkg-name">OLM Bundle Image</div>
+          <div class="pkg-desc">FROM scratch — carries only generated YAML manifests for the Operator Lifecycle Manager</div>
+        </div>
+        <span class="license-badge" style="background:#dcfce7;color:#15803d;border:1px solid #86efac">No Third-Party Packages</span>
+      </div>
+      <table class="fact-table">
+        <tr>
+          <td class="label">Base image</td>
+          <td class="value"><strong><code>FROM scratch</code></strong> — an absolutely empty Docker image. Contains no OS, no libc, no shell, no filesystem beyond what is explicitly COPY'd.</td>
+        </tr>
+        <tr>
+          <td class="label">Contents</td>
+          <td class="value">
+            <code>/manifests/</code> — CRD YAML, ClusterServiceVersion YAML, RBAC YAMLs<br/>
+            <code>/metadata/</code> — OLM annotations (<code>annotations.yaml</code>)<br/>
+            <code>/tests/scorecard/</code> — Scorecard test configuration<br/>
+            All files are generated by <code>operator-sdk</code> and <code>controller-gen</code> from project source.
+          </td>
+        </tr>
+        <tr>
+          <td class="label">Third-party OS packages</td>
+          <td class="value"><strong>None.</strong> <code>scratch</code> provides zero packages. Every file in this image originates from the project's own code generation pipeline.</td>
+        </tr>
+        <tr>
+          <td class="label">Executables</td>
+          <td class="value"><strong>None.</strong> The bundle image contains no runnable binaries. It is consumed by the OLM operator-sdk toolchain as a pure data container.</td>
+        </tr>
+        <tr>
+          <td class="label">Toolchain used to build it</td>
+          <td class="value"><code>operator-sdk v1.42.2</code> (Apache-2.0) — used to <em>generate</em> the bundle; not shipped inside the image.</td>
+        </tr>
+        <tr>
+          <td class="label">OLM framework</td>
+          <td class="value"><code>Operator Lifecycle Manager</code> (Apache-2.0) — <em>consumes</em> the bundle at deploy time; not embedded in the image.</td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="verdict" style="background:#f0fdf4;border:1px solid #bbf7d0;color:#14532d">
+      <div class="verdict-title">🔍 Review Board Assessment — OLM Bundle Image</div>
+      <strong>Zero open-source license obligations arise from the bundle image itself.</strong> Because the base is <code>scratch</code>, there are no third-party packages to attribute. The only OSS components relevant to this image are the <em>toolchain</em> that generates it (<code>operator-sdk</code>, Apache-2.0) and the <em>framework</em> that consumes it (OLM, Apache-2.0) — both permissive licenses with no copyleft obligations. The YAML manifests inside the image are 100% project-owned artifacts generated from your own Go type definitions.
+    </div>
+  </div>
+
+  <!-- 4. Summary -->
+  <div class="section">
+    <div class="section-title">
+      <div class="icon icon-amber">✅</div>
+      4 — Consolidated Review Summary
+    </div>
+    <p style="font-size:13px;color:#475569;margin-bottom:16px;">This table covers both generated images. The bundle image has no third-party packages; all OSS obligations come from the operator image's distroless base.</p>
+    <table class="summary-table">
+      <thead>
+        <tr>
+          <th>Review Question</th>
+          <th>netbase<br/><span style="font-weight:400;text-transform:none;font-size:10px;opacity:0.7">(operator image)</span></th>
+          <th>base-files<br/><span style="font-weight:400;text-transform:none;font-size:10px;opacity:0.7">(operator image)</span></th>
+          <th>Bundle Image<br/><span style="font-weight:400;text-transform:none;font-size:10px;opacity:0.7">(v302-bundle)</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Third-party packages present?</td>
+          <td><span class="check">✓</span> Yes — GPL-2.0-only</td>
+          <td><span class="check">✓</span> Yes — GPL-2.0-or-later</td>
+          <td><span class="cross">✗</span> None (FROM scratch)</td>
+        </tr>
+        <tr>
+          <td>Modified by the project?</td>
+          <td><span class="cross">✗</span> Not modified</td>
+          <td><span class="cross">✗</span> Not modified</td>
+          <td>N/A</td>
+        </tr>
+        <tr>
+          <td>Compiled into any binary?</td>
+          <td><span class="cross">✗</span> No — data files only</td>
+          <td><span class="cross">✗</span> No — data files only</td>
+          <td>N/A</td>
+        </tr>
+        <tr>
+          <td>Executes inside the container?</td>
+          <td><span class="cross">✗</span> No executables</td>
+          <td><span class="cross">✗</span> No executables</td>
+          <td><span class="cross">✗</span> No executables at all</td>
+        </tr>
+        <tr>
+          <td>Copyleft propagates to operator?</td>
+          <td><span class="cross">✗</span> No — not a derivative work</td>
+          <td><span class="cross">✗</span> No — not a derivative work</td>
+          <td>N/A</td>
+        </tr>
+        <tr>
+          <td>Must operator source be disclosed?</td>
+          <td><span class="cross">✗</span> Not required</td>
+          <td><span class="cross">✗</span> Not required</td>
+          <td><span class="cross">✗</span> Not required</td>
+        </tr>
+        <tr>
+          <td>Attribution required?</td>
+          <td><span class="check">✓</span> Yes — embedded by distroless</td>
+          <td><span class="check">✓</span> Yes — embedded by distroless</td>
+          <td><span class="cross">✗</span> None needed</td>
+        </tr>
+        <tr>
+          <td>Source publicly available?</td>
+          <td><span class="check">✓</span> packages.debian.org</td>
+          <td><span class="check">✓</span> packages.debian.org</td>
+          <td>N/A — 100% project-owned</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 5. Obligations -->
+  <div class="section">
+    <div class="section-title">
+      <div class="icon icon-purple">📋</div>
+      5 — Compliance Obligations
+    </div>
+    <ul class="obligation-list">
+      <li>
+        <div class="ob-bullet ob-required">✓</div>
+        <div><strong>Acknowledge presence in SBOM / release notes.</strong> Both packages must be listed in any Software Bill of Materials (SBOM) generated for each release. The distroless project's own SBOM tooling (compatible with SPDX and CycloneDX) can be used.</div>
+      </li>
+      <li>
+        <div class="ob-bullet ob-required">✓</div>
+        <div><strong>Point to upstream source on request.</strong> If a downstream customer or partner asks for source code, direct them to <code>https://packages.debian.org/</code>. You are not required to host copies yourself.</div>
+      </li>
+      <li>
+        <div class="ob-bullet ob-notreq">✗</div>
+        <div><strong>You do NOT need to open-source your operator.</strong> GPL copyleft does not extend to applications that merely run in a container alongside GPL-licensed config files.</div>
+      </li>
+      <li>
+        <div class="ob-bullet ob-notreq">✗</div>
+        <div><strong>You do NOT need to ship the GPL license text yourself.</strong> The distroless image already embeds <code>/usr/share/common-licenses/GPL-2</code> and per-package copyright files inside the image layers, satisfying the attribution requirement.</div>
+      </li>
+    </ul>
+  </div>
+
+  <!-- 6. Recommendations -->
+  <div class="section">
+    <div class="section-title">
+      <div class="icon icon-blue">💡</div>
+      6 — Recommendations for Future Releases
+    </div>
+    <div class="rec-grid">
+      <div class="rec-item">
+        <div class="rec-item-title">🔒 Pin Image by Digest</div>
+        <p>Replace <code>:nonroot</code> tag with a pinned SHA-256 digest in the Dockerfile to prevent silent base-image updates that could introduce new packages between releases.</p>
+      </div>
+      <div class="rec-item">
+        <div class="rec-item-title">📄 Generate SBOM per Release</div>
+        <p>Run <code>syft</code> or <code>docker sbom</code> on the final operator image as part of the CI pipeline and attach the SPDX/CycloneDX file as a release artifact.</p>
+      </div>
+      <div class="rec-item">
+        <div class="rec-item-title">🔍 Use Trivy / Grype for CVE Scanning</div>
+        <p>Run vulnerability scanning on the image after each build to detect any CVEs in the distroless layer packages, including <code>netbase</code> and <code>base-files</code>.</p>
+      </div>
+      <div class="rec-item">
+        <div class="rec-item-title">📬 Establish a Source-Request Process</div>
+        <p>Document an internal process for responding to GPL source-code requests from customers, pointing to <code>packages.debian.org</code> as the canonical upstream.</p>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /content -->
+
+<!-- ══ FOOTER ══ -->
+<div class="footer">
+  <div>© 2026 Internal Document — Confidential. For Open-Source Review Board Use.</div>
+  <div class="ai-credit">
+    <span>Analyzed with</span>
+    <span class="ai-chip">Claude · Anthropic</span>
+    <span>| April 28, 2026</span>
+  </div>
+</div>
+
+</body>
+</html>
