@@ -56,6 +56,8 @@ If you are re-running the build (e.g. after a cluster reset), clean both generat
 
 > **`--install-mode`** controls OLM operator install scope. Valid values: `SingleNamespace` (default — operator manages one specific namespace), `OwnNamespace`, `AllNamespaces`, `MultiNamespace`.
 
+> **Version tagging:** Replace `v300` with your actual release version (e.g. `v302`, `v303`). Use a new tag for each build to avoid stale image caches on the cluster.
+
 ### Step 2 (Alt) — Customer / Private Registry
 
 If the operator will be deployed to a customer environment with a **private registry** (Artifactory, Harbor, ECR, Docker Hub org, etc.), add `--customer-registry`. This rewrites all image references in the output package and generates two extra helper scripts.
@@ -156,20 +158,39 @@ You only need the `*-package/` folder and `kubectl`/`operator-sdk` on your machi
 cd p-kserve-operator-package   # all commands below run from inside this folder
 ```
 
-### Step 0 — Verify cert-manager is installed *(pre-requisite)*
+### Step 0 — Install cert-manager *(cluster pre-requisite)*
 
 > [!IMPORTANT]
-> The operator **does not install cert-manager**. It must be present in the cluster before deployment. The operator will enter `CertManagerNotFound` phase and surface a clear error if it is absent.
+> The operator **does not install cert-manager**. cert-manager must be present in the cluster **before** the operator is deployed. The operator validates this at startup and will enter a `CertManagerNotFound` error phase with a clear message if it is absent.
 
+#### Check if cert-manager is already installed
 ```bash
-# Check cert-manager CRDs are registered
 kubectl get crds | grep cert-manager.io
-# Expected output should include: certificates.cert-manager.io, issuers.cert-manager.io, etc.
-
-# If not installed, install cert-manager first:
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
-kubectl wait --for=condition=Ready pods --all -n cert-manager --timeout=120s
+# Expected output (if installed):
+# certificaterequests.cert-manager.io
+# certificates.cert-manager.io
+# challenges.acme.cert-manager.io
+# clusterissuers.cert-manager.io
+# issuers.cert-manager.io
+# orders.acme.cert-manager.io
 ```
+
+#### Install cert-manager (if not present)
+```bash
+# Pinned stable release (v1.17.2 as of April 2026 — check https://github.com/cert-manager/cert-manager/releases for latest)
+CERT_MANAGER_VERSION="v1.17.2"
+
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml
+
+# Wait for all cert-manager pods to be Ready (typically ~60s)
+kubectl wait --for=condition=Ready pods --all -n cert-manager --timeout=180s
+
+# Verify
+kubectl get pods -n cert-manager
+# Expected: cert-manager, cert-manager-cainjector, cert-manager-webhook pods all Running
+```
+
+> **Why is cert-manager required?** KServe uses cert-manager to provision TLS certificates for its webhook endpoints. Without it, the KServe webhook admission controller cannot start.
 
 ### Step 1 — Install OLM (once per cluster)
 ```bash
@@ -229,13 +250,14 @@ spec:
 EOF
 
 # 4d. Deploy via OLM bundle into the dedicated operator namespace
-operator-sdk run bundle <bundle-image> \
+#     Replace <version> with your actual image version tag (e.g. v302, v303)
+operator-sdk run bundle docker.io/akashneha/kserve-raw-operator:<version>-bundle \
   --pull-secret-name dockerhub-creds \
   --namespace kserve-operator-system
 ```
 
-> **Why a dedicated namespace?**
-> OLM enforces exactly **one** `OperatorGroup` per namespace. The `operators` namespace already has `global-operators` (AllNamespaces scope) and installing into `default` would trigger OwnNamespace mode. A fresh dedicated namespace avoids both conflicts.
+> **Bundle image tag:** The bundle image tag is printed at the end of `generate-kserve-operator.sh` output, in the format `<image-tag>-bundle`.
+> Example: if you built with `-i docker.io/akashneha/kserve-raw-operator:v302`, the bundle image is `docker.io/akashneha/kserve-raw-operator:v302-bundle`.
 
 > **Customer registry flow:** If using `deploy-bundle.sh`, it will prompt you. Run `mirror-images.sh` first to push images to the customer registry, then run `deploy-bundle.sh` — it handles the bundle image reference automatically.
 
