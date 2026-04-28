@@ -25,7 +25,7 @@ DOCKER_USERNAME=""
 DOCKER_PASSWORD=""
 TRUST_CERT_PATH=""
 # Valid values: AllNamespaces | OwnNamespace | SingleNamespace | MultiNamespace
-INSTALL_MODE="OwnNamespace"
+INSTALL_MODE="SingleNamespace"
 CUSTOMER_REGISTRY=""
 
 # 1. Parse CLI Arguments
@@ -368,6 +368,33 @@ if [ "$GEN_OLM_BUNDLE" = true ]; then
         fi
     else
         echo "WARNING: Could not find bundle ClusterServiceVersion YAML to patch installModes."
+    fi
+
+    # Re-patch the base CSV after 'make bundle' since it may have been regenerated.
+    echo "Configuring OLM installMode in Base_CSV to: ${INSTALL_MODE}"
+    Base_CSV=$(find "${OUTPUT_DIR}/config/manifests/bases" -name "*.clusterserviceversion.yaml" 2>/dev/null | head -1)
+    if [ -n "$Base_CSV" ]; then
+        INSTALL_MODE="${INSTALL_MODE}" yq -i '.spec.installModes[] |= (.supported = (.type == env(INSTALL_MODE)))' "$Base_CSV"
+        echo "Base CSV installModes patched: only '${INSTALL_MODE}' set to supported: true"
+        # Verify
+        echo "  Verification: Base_CSV"
+        yq '.spec.installModes[]' "$Base_CSV"
+
+        # If --customer-registry is set, also rewrite the operator image ref inside the base CSV.
+        if [ -n "${CUSTOMER_REGISTRY}" ]; then
+            CUST_IMAGE_SHORTNAME="${IMAGE_TAG##*/}"       # e.g. kserve-raw-operator:v200
+            CUST_OPERATOR_IMAGE="${CUSTOMER_REGISTRY}/${CUST_IMAGE_SHORTNAME}"
+            echo "Rewriting operator image in base CSV for customer registry:"
+            echo "  ${IMAGE_TAG} → ${CUST_OPERATOR_IMAGE}"
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+                sed -i '' "s|${IMAGE_TAG}|${CUST_OPERATOR_IMAGE}|g" "$Base_CSV"
+            else
+                sed -i "s|${IMAGE_TAG}|${CUST_OPERATOR_IMAGE}|g" "$Base_CSV"
+            fi
+            echo "  Base CSV operator image updated."
+        fi
+    else
+        echo "WARNING: Could not find base ClusterServiceVersion YAML to patch installModes."
     fi
 
     BUNDLE_IMG="${IMAGE_TAG}-bundle"

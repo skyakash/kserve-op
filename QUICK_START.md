@@ -50,11 +50,11 @@ If you are re-running the build (e.g. after a cluster reset), clean both generat
   -s p-kserve-raw \
   -i docker.io/akashneha/kserve-raw-operator:v300 \
   --pull-secret dockerhub-creds \
-  --install-mode OwnNamespace \
+  --install-mode SingleNamespace \
   -b -p -o
 ```
 
-> **`--install-mode`** controls OLM operator install scope. Valid values: `OwnNamespace` (default — operator only manages its own namespace), `AllNamespaces`, `SingleNamespace`, `MultiNamespace`.
+> **`--install-mode`** controls OLM operator install scope. Valid values: `SingleNamespace` (default — operator manages one specific namespace), `OwnNamespace`, `AllNamespaces`, `MultiNamespace`.
 
 ### Step 2 (Alt) — Customer / Private Registry
 
@@ -73,7 +73,7 @@ If the operator will be deployed to a customer environment with a **private regi
   -i docker.io/akashneha/kserve-raw-operator:v300 \
   --pull-secret dockerhub-creds \
   --customer-registry docker.io/<customer-account> \
-  --install-mode OwnNamespace \
+  --install-mode SingleNamespace \
   -b -p -o
 ```
 
@@ -171,26 +171,68 @@ bash setup-credentials.sh --user <registry-user> --pass <registry-token>
 bash setup-credentials.sh
 ```
 
-### Step 3 — Deploy the operator
+### Step 3 — Create the KServe namespace
 
-**Option A: OLM Bundle (recommended, `InstallMode: OwnNamespace`)**
+The operator does **not** create the KServe namespace automatically — you must create it before deploying.
+
 ```bash
-# Standard flow (images on your registry):
-operator-sdk run bundle docker.io/akashneha/kserve-raw-operator:v300-bundle \
-  --pull-secret-name dockerhub-creds
+# Default namespace (matches the CR default):
+kubectl create namespace kserve
 
-# Customer registry flow (if you have deploy-bundle.sh):
-bash deploy-bundle.sh dockerhub-creds
+# Or use a custom namespace — you will need to set spec.kserveNamespace in the CR:
+kubectl create namespace <your-namespace>
 ```
 
-**Option B: Direct manifests (no OLM needed — skip Step 1)**
+### Step 4 — Deploy the operator
+
+**Option A: OLM Bundle (recommended, `InstallMode: SingleNamespace`)**
+
+`SingleNamespace` mode requires a **dedicated operator namespace** with an `OperatorGroup` that targets the namespace the CR will be created in (e.g. `default`). The operator must NOT be installed into `default` or `operators` (those already have OperatorGroups from OLM install).
+
+```bash
+# 4a. Create a dedicated namespace for the operator itself
+kubectl create namespace kserve-operator-system
+
+# 4b. Create the pull secret in that namespace (needed to pull the operator image)
+kubectl create secret docker-registry dockerhub-creds \
+  --docker-server=docker.io \
+  --docker-username=<registry-user> \
+  --docker-password=<registry-token> \
+  -n kserve-operator-system
+
+# 4c. Create an OperatorGroup in the operator namespace, targeting 'default'
+#     (the namespace where the KServeRawMode CR will live)
+kubectl apply -f - <<'EOF'
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: kserve-operator-og
+  namespace: kserve-operator-system
+spec:
+  targetNamespaces:
+    - default
+EOF
+
+# 4d. Deploy via OLM bundle into the dedicated operator namespace
+operator-sdk run bundle <bundle-image> \
+  --pull-secret-name dockerhub-creds \
+  --namespace kserve-operator-system
+```
+
+> **Why a dedicated namespace?**
+> OLM enforces exactly **one** `OperatorGroup` per namespace. The `operators` namespace already has `global-operators` (AllNamespaces scope) and installing into `default` would trigger OwnNamespace mode. A fresh dedicated namespace avoids both conflicts.
+
+> **Customer registry flow:** If using `deploy-bundle.sh`, it will prompt you. Run `mirror-images.sh` first to push images to the customer registry, then run `deploy-bundle.sh` — it handles the bundle image reference automatically.
+
+**Option B: Direct manifests (no OLM needed — skip Steps 1, 3, and 4a–4c)**
 ```bash
 kubectl apply -f operator-deployment.yaml
 ```
 
-> **Auto-Init:** The operator automatically creates a default `KServeRawMode` CR on startup. KServe installation begins immediately — no manual `kubectl apply -f kserve-rawmode.yaml` required.
+> **Auto-Init:** The operator automatically creates a default `KServeRawMode` CR on startup targeting namespace `kserve`. KServe installation begins immediately — no manual `kubectl apply -f kserve-rawmode.yaml` required.
+> To install into a different namespace, apply the CR manually with `spec.kserveNamespace` set to your namespace.
 
-### Step 4 — Watch installation progress
+### Step 5 — Watch installation progress
 ```bash
 kubectl get kserverawmode -A -w
 ```
@@ -205,7 +247,7 @@ default     kserve-rawmode   InstallingRuntimes      55s
 default     kserve-rawmode   Ready                   60s
 ```
 
-### Step 5 — Deploy and test the Iris inference model
+### Step 6 — Deploy and test the Iris inference model
 ```bash
 kubectl apply -f 06-sample-model/sklearn-iris.yaml
 

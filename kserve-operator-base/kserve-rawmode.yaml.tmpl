@@ -2,4 +2,8 @@ apiVersion: operator.API_DOMAIN/v1alpha1
 kind: KServeRawMode
 metadata:
   name: kserve-rawmode
-spec: {}
+spec:
+  # kserveNamespace is the pre-existing namespace where KServe components will be installed.
+  # The user must create this namespace manually BEFORE applying this CR.
+  # Defaults to "kserve" if not specified.
+  kserveNamespace: kserve

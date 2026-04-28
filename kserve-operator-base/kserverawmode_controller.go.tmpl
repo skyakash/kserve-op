@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -35,6 +34,7 @@ import (
 
 const defaultCRName = "kserve-rawmode"
 const defaultCRNamespace = "default"
+const defaultKServeNamespace = "kserve"
 
 // KServeRawModeReconciler reconciles a KServeRawMode object
 type KServeRawModeReconciler struct {
@@ -55,6 +55,15 @@ func (r *KServeRawModeReconciler) setPhase(ctx context.Context, instance *operat
 	}
 	log.FromContext(ctx).Info("Phase updated", "phase", phase)
 	return nil
+}
+
+// resolveKServeNamespace returns the target KServe namespace from the CR spec,
+// falling back to the default "kserve" if not specified.
+func resolveKServeNamespace(instance *operatorv1alpha1.KServeRawMode) string {
+	if instance.Spec.KServeNamespace != "" {
+		return instance.Spec.KServeNamespace
+	}
+	return defaultKServeNamespace
 }
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -81,7 +90,8 @@ func (r *KServeRawModeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
-	logger.Info("Starting installation of KServe Raw Mode", "generation", instance.Generation)
+	targetNS := resolveKServeNamespace(&instance)
+	logger.Info("Starting installation of KServe Raw Mode", "generation", instance.Generation, "kserveNamespace", targetNS)
 
 	// 1. Install cert-manager
 	if err := r.setPhase(ctx, &instance, "InstallingCertManager"); err != nil {
@@ -92,15 +102,6 @@ func (r *KServeRawModeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 	if err := waitForNamespacePodsReady(ctx, r.Client, "cert-manager"); err != nil {
 		return ctrl.Result{}, fmt.Errorf("cert-manager pods not ready: %w", err)
-	}
-
-	// Create kserve namespace first, before applying CRDs or RBAC that might depend on it
-	ns := &corev1.Namespace{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
-		ObjectMeta: metav1.ObjectMeta{Name: "kserve"},
-	}
-	if err := r.Client.Patch(ctx, ns, client.Apply, client.ForceOwnership, client.FieldOwner("kserve-raw-operator")); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to create kserve namespace: %w", err)
 	}
 
 	// 2. Install CRDs
@@ -126,8 +127,8 @@ func (r *KServeRawModeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err := applyManifests(ctx, r.Client, "assets/04-kserve-core/kserve-core.yaml"); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := waitForNamespacePodsReady(ctx, r.Client, "kserve"); err != nil {
-		return ctrl.Result{}, fmt.Errorf("kserve pods not ready: %w", err)
+	if err := waitForNamespacePodsReady(ctx, r.Client, targetNS); err != nil {
+		return ctrl.Result{}, fmt.Errorf("kserve pods not ready in namespace %q: %w", targetNS, err)
 	}
 
 	// 5. Install Runtimes
@@ -138,7 +139,7 @@ func (r *KServeRawModeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("Installation successfully completed!")
+	logger.Info("Installation successfully completed!", "kserveNamespace", targetNS)
 
 	// Record the generation we successfully reconciled so we don't re-run on
 	// the next status-only re-trigger.
@@ -178,7 +179,9 @@ func (r *KServeRawModeReconciler) ensureDefaultCR(ctx context.Context) error {
 		return nil
 	}
 
-	// No CR exists — create the default one
+	// No CR exists — create the default one.
+	// NOTE: The user is responsible for creating the kserveNamespace before deploying
+	// the operator. The CR defaults to "kserve" but can be overridden via spec.kserveNamespace.
 	cr := &operatorv1alpha1.KServeRawMode{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      defaultCRName,
@@ -186,6 +189,9 @@ func (r *KServeRawModeReconciler) ensureDefaultCR(ctx context.Context) error {
 			Labels: map[string]string{
 				"app.kubernetes.io/created-by": "auto-init",
 			},
+		},
+		Spec: operatorv1alpha1.KServeRawModeSpec{
+			KServeNamespace: defaultKServeNamespace,
 		},
 	}
 	if err := r.Create(ctx, cr); err != nil {
@@ -196,7 +202,11 @@ func (r *KServeRawModeReconciler) ensureDefaultCR(ctx context.Context) error {
 		return fmt.Errorf("failed to auto-create default KServeRawMode CR: %w", err)
 	}
 
-	logger.Info("Auto-created default KServeRawMode CR — KServe installation will begin", "name", defaultCRName, "namespace", defaultCRNamespace)
+	logger.Info("Auto-created default KServeRawMode CR — KServe installation will begin",
+		"name", defaultCRName,
+		"namespace", defaultCRNamespace,
+		"kserveNamespace", defaultKServeNamespace,
+	)
 	return nil
 }
 

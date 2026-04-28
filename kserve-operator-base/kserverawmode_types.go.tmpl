@@ -22,6 +22,12 @@ import (
 
 // KServeRawModeSpec defines the desired state of KServeRawMode
 type KServeRawModeSpec struct {
+	// KServeNamespace is the pre-existing namespace into which KServe
+	// components will be installed. The namespace must be created by
+	// the user before applying this CR. Defaults to "kserve".
+	// +kubebuilder:default="kserve"
+	// +optional
+	KServeNamespace string `json:"kserveNamespace,omitempty"`
 }
 
 // KServeRawModeStatus defines the observed state of KServeRawMode
@@ -36,6 +42,7 @@ type KServeRawModeStatus struct {
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
 //+kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+//+kubebuilder:printcolumn:name="KServe NS",type=string,JSONPath=`.spec.kserveNamespace`
 //+kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // KServeRawMode is the Schema for the kserverawmodes API
