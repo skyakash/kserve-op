@@ -290,13 +290,32 @@ fi
 
 if [[ "$BUILD_CHOICE" =~ ^[Yy]$ ]]; then
     if [ "$MULTI_PLATFORM" = true ]; then
-        echo "Running 'make docker-buildx IMG=${IMAGE_TAG}'..."
+        echo "Running multi-platform operator image build for ${IMAGE_TAG}..."
         echo "NOTE: Multi-platform build automatically pushes to the registry."
-        if ! make docker-buildx IMG="${IMAGE_TAG}"; then
-            echo "ERROR: Multi-platform build failed."
+        # We call docker buildx directly instead of 'make docker-buildx' because the
+        # Makefile target uses '-' prefix on the build line, which silently swallows
+        # errors — the image would appear to build successfully even if push failed.
+        BUILDER_NAME="kserve-op-builder-$$"
+        docker buildx create --name "${BUILDER_NAME}" --use
+        if ! docker buildx build \
+            --push \
+            --platform linux/arm64,linux/amd64 \
+            --tag "${IMAGE_TAG}" \
+            -f Dockerfile .; then
+            docker buildx rm "${BUILDER_NAME}" 2>/dev/null || true
+            echo "ERROR: Multi-platform operator image build/push failed."
             exit 1
         fi
-        echo "The cross-platform image '${IMAGE_TAG}' has been successfully built and pushed!"
+        docker buildx rm "${BUILDER_NAME}" 2>/dev/null || true
+        echo "The cross-platform operator image '${IMAGE_TAG}' has been successfully built and pushed!"
+        # Verify it's actually on the registry
+        echo "Verifying push (docker manifest inspect)..."
+        if ! docker manifest inspect "${IMAGE_TAG}" > /dev/null 2>&1; then
+            echo "ERROR: Image ${IMAGE_TAG} not found on registry after push. Something went wrong."
+            exit 1
+        fi
+        echo "Verification passed: ${IMAGE_TAG} is available on the registry."
+
     else
         echo "Running 'make docker-build IMG=${IMAGE_TAG}'..."
         if ! make docker-build IMG="${IMAGE_TAG}"; then
