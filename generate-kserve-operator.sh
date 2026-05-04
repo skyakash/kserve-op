@@ -726,10 +726,11 @@ cat > "${PACKAGE_DIR}/setup-credentials.sh" <<'CREDS_EOF'
 #     bash setup-credentials.sh
 #
 # Namespace lifecycle:
-#   default          — always exists
-#   *-system         — created by: kubectl apply -f operator-deployment.yaml
-#   olm, operators   — created by: operator-sdk olm install
-#   kserve           — created automatically by the operator reconcile loop
+#   default                   — always exists
+#   *-system                  — created by: kubectl apply -f operator-deployment.yaml
+#   olm, operators            — created by: operator-sdk olm install
+#   cert-manager              — created by the user when installing cert-manager (cluster prerequisite, NOT installed by the operator)
+#   <KServe target namespace> — created by the user before deploying (default name: 'kserve', overridable via spec.kserveNamespace in the CR)
 # =============================================================================
 set -e
 
@@ -789,7 +790,11 @@ done
 
 echo ""
 echo "Pull secret '${SECRET_NAME}' configured."
-echo "Namespaces 'kserve' and 'cert-manager' are created automatically by the operator — no action needed."
+echo ""
+echo "Reminder: cert-manager must be installed BEFORE deploying the operator (cluster prerequisite)."
+echo "Reminder: the KServe target namespace must be created BEFORE deploying the operator."
+echo "  Default name: 'kserve' (overridable via spec.kserveNamespace in the CR)."
+echo "  Example:  kubectl create namespace kserve"
 CREDS_EOF
 # Inject generator-time values (secret name, system namespace)
 if [[ "$OSTYPE" == "darwin"* ]]; then

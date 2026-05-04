@@ -2,17 +2,36 @@
 
 This standalone directory contains all the manifests required to install **KServe configured for Raw Deployment Mode**, ensuring that InferenceServices deploy as standard Kubernetes Deployments/Services (no Knative or Istio required).
 
+## Prerequisite: cert-manager
+
+KServe webhooks require [cert-manager](https://cert-manager.io/) for TLS certificate provisioning. It is **not bundled** with this package — install it on the cluster yourself before running the installer.
+
+```bash
+# Pinned stable release — check https://github.com/cert-manager/cert-manager/releases for latest
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.17.2/cert-manager.yaml
+kubectl wait --for=condition=Ready pods --all -n cert-manager --timeout=180s
+```
+
+Verify:
+```bash
+kubectl get crds | grep cert-manager.io
+```
+
+The installer (`install.sh`) checks for cert-manager and exits with a clear error if it is missing.
+
 ## Directory Structure
-1. `01-cert-manager`: Cert-Manager manifests (required for KServe webhooks).
-2. `02-kserve-crds`: KServe Custom Resource Definitions.
-3. `03-kserve-rbac`: KServe ClusterRoles and authentication bindings.
-4. `04-kserve-core`: The KServe Controller Manager (Patched with `"defaultDeploymentMode": "RawDeployment"` and explicitly appends the `selfsigned-issuer` so webhooks can establish TLS).
-5. `05-kserve-runtimes`: Default Predictor Runtimes (Scikit-Learn, PyTorch, Triton, HuggingFace).
-6. `06-sample-model`: A sample `sklearn-iris` model and its test payload.
-7. `install.sh`: An automated deployment script handling the webhook sleep sequences.
+
+> Numbering starts at `02` because slot `01` is reserved for cert-manager, which is now a cluster prerequisite (see above) rather than a bundled component.
+
+1. `02-kserve-crds`: KServe Custom Resource Definitions.
+2. `03-kserve-rbac`: KServe ClusterRoles and authentication bindings.
+3. `04-kserve-core`: The KServe Controller Manager (Patched with `"defaultDeploymentMode": "RawDeployment"` and explicitly appends the `selfsigned-issuer` so webhooks can establish TLS).
+4. `05-kserve-runtimes`: Default Predictor Runtimes (Scikit-Learn, PyTorch, Triton, HuggingFace).
+5. `06-sample-model`: A sample `sklearn-iris` model and its test payload.
+6. `install.sh`: An automated deployment script handling the webhook sleep sequences.
 
 ## Installation
-Ensure you are connected to a healthy Kubernetes cluster.
+Ensure you are connected to a healthy Kubernetes cluster and that **cert-manager is installed** (see above).
 
 ### Fast Installation
 Simply execute the installer script from this directory:
@@ -23,7 +42,6 @@ Simply execute the installer script from this directory:
 ### Manual Installation
 If applying manually, you must follow this exact order and wait for the pods in the previous step to become `Ready` before proceeding:
 ```bash
-kubectl apply -f 01-cert-manager/cert-manager.yaml
 kubectl apply --server-side -f 02-kserve-crds/kserve-crds.yaml
 kubectl apply -f 03-kserve-rbac/kserve-rbac.yaml
 kubectl apply --server-side -f 04-kserve-core/kserve-core.yaml
