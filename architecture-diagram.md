@@ -22,7 +22,7 @@ flowchart TD
     RawPkg -->|Source input| OperScript
 
     subgraph Phase2["Phase 2 — generate-kserve-operator.sh"]
-        OperScript[["generate-kserve-operator.sh\n-t p-kserve-operator -s p-kserve-raw\n-i docker.io/akashneha/...:v300\n--pull-secret dockerhub-creds\n--install-mode OwnNamespace -b -p -o"]]:::script
+        OperScript[["generate-kserve-operator.sh\n-t p-kserve-operator -s p-kserve-raw\n-i docker.io/akashneha/...:v303\n--pull-secret dockerhub-creds\n--install-mode SingleNamespace -b -p -o"]]:::script
         OperProj["Go Operator Project\n(p-kserve-operator/)"]:::package
         DockerImg["Container Image\ndocker.io/akashneha/kserve-raw-operator:v300\n(linux/arm64 or linux/amd64)"]:::package
         StandalonePkg["Standalone Package\n(p-kserve-operator-package/)\noperator-deployment.yaml\nkserve-rawmode.yaml\nsetup-credentials.sh\n06-sample-model/\n[mirror-images.sh]  ← with --customer-registry\n[deploy-bundle.sh]  ← with --customer-registry"]:::package
@@ -61,7 +61,7 @@ flowchart TD
         K8sCluster[("Kubernetes Cluster")]:::k8s
         OperPod["Operator Controller Pod\n(pulls via pull secret)"]:::k8s
         AutoCR["Auto-Init: Operator creates\nKServeRawMode CR automatically\non first startup"]:::k8s
-        KServeStack["Active KServe Stack\ncert-manager + KServe CRDs + RBAC\nKServe Controller + ServingRuntimes"]:::k8s
+        KServeStack["Active KServe Stack\nKServe CRDs + RBAC\nKServe Controller + ServingRuntimes\n(cert-manager is a cluster pre-requisite,\nnot deployed by the operator)"]:::k8s
         IFSvc["InferenceService\nsklearn-iris predictor"]:::k8s
 
         K8sCluster --> OperPod
@@ -85,8 +85,10 @@ sequenceDiagram
     Note over Ctrl: Operator starts — auto-creates KServeRawMode CR
     Ctrl->>K8s: Create KServeRawMode "kserve-rawmode" (if not exists)
     K8s->>Ctrl: Reconcile(KServeRawMode)
-    Ctrl->>Assets: Read 01-cert-manager/
-    Ctrl->>K8s: Server-Side Apply cert-manager
+    Note over Ctrl: Pre-flight: Check cert-manager CRD group exists
+    alt cert-manager NOT found
+        Ctrl-->>K8s: Phase: CertManagerNotFound (error logged)
+    else cert-manager found
     Ctrl->>Assets: Read 02-kserve-crds/
     Ctrl->>K8s: Server-Side Apply KServe CRDs
     Ctrl->>Assets: Read 03-kserve-rbac/
@@ -97,6 +99,7 @@ sequenceDiagram
     Ctrl->>Assets: Read 05-kserve-runtimes/
     Ctrl->>K8s: Server-Side Apply ClusterServingRuntimes
     K8s-->>User: KServeRawMode phase: Ready
+    end
 ```
 
 > No manual `kubectl apply -f kserve-rawmode.yaml` is required. The operator auto-initialises KServe on startup.

@@ -107,7 +107,7 @@ stateDiagram-v2
     AutoInitPhase --> ReconciliationLoop : Triggers Watch Event:::trigger
     
     state ReconciliationLoop {
-        step1: 1. Apply cert-manager manifests
+        step1: 1. Validate cert-manager (pre-flight CRD check)
         step2: 2. Apply KServe CRDs
         step3: 3. Apply RBAC & Namespaces
         step4: 4. Apply KServe Controller
@@ -160,7 +160,7 @@ sequenceDiagram
     K8s-->>Operator: Start Controller Pod
     
     Operator->>K8s: Auto-create default KServeRawMode CR
-    Operator->>K8s: Reconcile (Apply CertManager, CRDs, etc.)
+    Operator->>K8s: Reconcile (Validate cert-manager pre-flight, Apply CRDs, RBAC, Controller, Runtimes)
     K8s-->>Customer: KServe Stack is Operational!
 ```
 

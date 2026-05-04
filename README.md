@@ -118,9 +118,20 @@ This script utilizes `operator-sdk` (v1.42.0+) to dynamically scaffold a custom 
    ```
 4. **Deploy** the generated package to your cluster:
    ```bash
-    # Option A: OLM bundle (recommended — requires OLM pre-installed)
+   # Pre-requisite: cert-manager must be installed before the operator
+   CERT_MANAGER_VERSION="v1.17.2"
+   kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml
+   kubectl wait --for=condition=Ready pods --all -n cert-manager --timeout=180s
+
+   # Create required namespace and OperatorGroup (for SingleNamespace install mode)
+   kubectl create namespace kserve
+   kubectl create namespace kserve-operator-system
+
+   # Option A: OLM bundle (recommended — requires OLM pre-installed)
+   operator-sdk olm install
    operator-sdk run bundle docker.io/your-org/kserve-raw-operator:v1-bundle \
-     --pull-secret-name <your-pull-secret>
+     --pull-secret-name <your-pull-secret> \
+     --namespace kserve-operator-system
 
    # Option B: Direct manifests (no OLM needed)
    kubectl apply -f p-kserve-operator-package/operator-deployment.yaml

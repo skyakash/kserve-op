@@ -73,7 +73,7 @@ If you type `kserve-prod-deploy`, the script will create this folder right next 
 ## What it Outputs
 The generated directory will contain carefully split sub-directories alongside deployment execution scripts:
 
-1. **`01-cert-manager/`**: Contains the `v1.13.0` release of cert-manager (a hard requirement for KServe webhooks).
+1. **`01-cert-manager/`**: Contains the `v1.17.2` release of cert-manager. This directory is extracted by the raw script for reference and standalone deployment. **Important:** The KServe operator does not install cert-manager itself — it must be installed as a cluster pre-requisite before deploying the operator.
 2. **`02-kserve-crds/`**: Contains the Custom Resource Definitions (like `InferenceService`, `ClusterServingRuntime`, and `LLMInferenceServiceConfig`).
 3. **`03-kserve-rbac/`**: Contains the necessary ClusterRoles and authentication manifests.
 4. **`04-kserve-core/`**: Contains the KServe Controller Manager deployments. **Crucially, the script patches the inline ConfigMap so `defaultDeploymentMode` is explicitly set to `RawDeployment`, and explicitly appends the `selfsigned-issuer` so webhooks can establish TLS.**
