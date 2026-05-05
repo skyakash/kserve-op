@@ -188,6 +188,48 @@ else
     echo "WARNING: ${KUSTOMIZATION_FILE} not found — kustomize namespace will use operator-sdk default."
 fi
 
+# Inject WATCH_NAMESPACE env var into the manager container via downward API.
+# OLM annotates the Pod with 'olm.targetNamespaces' based on the OperatorGroup's
+# targetNamespaces; reading it lets the controller's auto-init create the default
+# CR in the right namespace. Without this, auto-init falls back to "kserve" and
+# fails when the user picks a different namespace name (e.g. my-kserve).
+MANAGER_FILE="config/manager/manager.yaml"
+if [ -f "${MANAGER_FILE}" ]; then
+    python3 - <<'PY'
+import yaml, sys
+path = "config/manager/manager.yaml"
+with open(path) as f:
+    docs = list(yaml.safe_load_all(f))
+patched = False
+env_var = {
+    "name": "WATCH_NAMESPACE",
+    "valueFrom": {
+        "fieldRef": {
+            "fieldPath": "metadata.annotations['olm.targetNamespaces']"
+        }
+    },
+}
+for doc in docs:
+    if not doc or doc.get("kind") != "Deployment":
+        continue
+    for c in doc["spec"]["template"]["spec"]["containers"]:
+        if c.get("name") != "manager":
+            continue
+        existing = c.get("env") or []
+        existing = [e for e in existing if e.get("name") != "WATCH_NAMESPACE"]
+        existing.append(env_var)
+        c["env"] = existing
+        patched = True
+if not patched:
+    sys.exit("ERROR: did not find a manager container in manager.yaml to patch")
+with open(path, "w") as f:
+    yaml.safe_dump_all(docs, f, default_flow_style=False, sort_keys=False)
+print("Injected WATCH_NAMESPACE env var (downward API) into manager container.")
+PY
+else
+    echo "WARNING: ${MANAGER_FILE} not found — WATCH_NAMESPACE will not be injected."
+fi
+
 # Patch installModes in the base CSV so it is preserved as source-of-truth.
 # NOTE: make bundle regenerates installModes from operator-sdk defaults (AllNamespaces=true),
 # so we ALSO patch the bundle CSV after make bundle runs (see below). yq is used for

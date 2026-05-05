@@ -94,11 +94,15 @@ func applyManifests(ctx context.Context, c client.Client, path string, targetNS 
 }
 
 // rewriteEmbeddedNamespaceRefs replaces every "kserve" namespace reference
-// inside the structured spec of resources that point at namespaces by name:
+// inside the structured spec/metadata of resources that point at the namespace
+// by name:
 //
+//   - cert-manager.io/inject-ca-from annotation (any kind): "<ns>/<cert>"
 //   - ClusterRoleBinding/RoleBinding subjects[].namespace
 //   - MutatingWebhookConfiguration/ValidatingWebhookConfiguration
 //     webhooks[].clientConfig.service.namespace
+//   - Certificate (cert-manager.io/v1) spec.commonName and spec.dnsNames[]
+//     (DNS pattern <svc>.<ns>.svc[.cluster.local])
 //
 // String-level replacement would risk touching identifiers like
 // "kserve-controller-manager" or image refs like "kserve/agent:latest";
@@ -107,6 +111,18 @@ func applyManifests(ctx context.Context, c client.Client, path string, targetNS 
 func rewriteEmbeddedNamespaceRefs(obj *unstructured.Unstructured, targetNS string) error {
 	if targetNS == bakedKServeNamespace {
 		return nil
+	}
+
+	// Annotation rewrite is kind-agnostic — applies to CRDs, WebhookConfigurations,
+	// Services, etc. The format is "<namespace>/<certificate-name>".
+	if annos := obj.GetAnnotations(); annos != nil {
+		if v, ok := annos["cert-manager.io/inject-ca-from"]; ok {
+			parts := strings.SplitN(v, "/", 2)
+			if len(parts) == 2 && parts[0] == bakedKServeNamespace {
+				annos["cert-manager.io/inject-ca-from"] = targetNS + "/" + parts[1]
+				obj.SetAnnotations(annos)
+			}
+		}
 	}
 
 	switch obj.GetKind() {
@@ -161,8 +177,50 @@ func rewriteEmbeddedNamespaceRefs(obj *unstructured.Unstructured, targetNS strin
 		if changed {
 			return unstructured.SetNestedSlice(obj.Object, webhooks, "webhooks")
 		}
+
+	case "Certificate":
+		// cert-manager Certificate. Rewrite .kserve. → .<targetNS>. inside
+		// DNS names (anchored on the standard <svc>.<ns>.svc pattern).
+		if cn, found, _ := unstructured.NestedString(obj.Object, "spec", "commonName"); found {
+			if newCN := rewriteSvcDNSNamespace(cn, targetNS); newCN != cn {
+				if err := unstructured.SetNestedField(obj.Object, newCN, "spec", "commonName"); err != nil {
+					return err
+				}
+			}
+		}
+		if dnsNames, found, _ := unstructured.NestedStringSlice(obj.Object, "spec", "dnsNames"); found {
+			changed := false
+			for i, n := range dnsNames {
+				if newN := rewriteSvcDNSNamespace(n, targetNS); newN != n {
+					dnsNames[i] = newN
+					changed = true
+				}
+			}
+			if changed {
+				if err := unstructured.SetNestedStringSlice(obj.Object, dnsNames, "spec", "dnsNames"); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	return nil
+}
+
+// rewriteSvcDNSNamespace recognizes the Kubernetes service DNS pattern
+// <svc>.<ns>.svc[.cluster.local] and replaces the namespace component
+// when it matches the baked "kserve" placeholder. Strings that are not
+// service DNS names (e.g. arbitrary text or image refs) are returned
+// unchanged.
+func rewriteSvcDNSNamespace(dns, targetNS string) string {
+	parts := strings.Split(dns, ".")
+	if len(parts) < 3 {
+		return dns
+	}
+	if parts[1] != bakedKServeNamespace || parts[2] != "svc" {
+		return dns
+	}
+	parts[1] = targetNS
+	return strings.Join(parts, ".")
 }
 
 // waitForNamespacePodsReady polls until all pods in the given namespace are Ready,
