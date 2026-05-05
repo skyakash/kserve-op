@@ -47,7 +47,7 @@ If the operator image is hosted on a private registry (e.g. Docker Hub with auth
 | Namespace | Created by |
 |---|---|
 | `default` | Always exists |
-| `TARGET_DIR_NAME-system` | `kubectl apply -f operator-deployment.yaml` |
+| `kserve-operator-system` | `kubectl apply -f operator-deployment.yaml` |
 | `olm`, `operators` | `operator-sdk olm install` |
 | `kserve`, `cert-manager` | The operator's reconcile loop (fully automatic) |
 
@@ -57,7 +57,7 @@ If this package was generated with `--docker-username` and `--docker-password`, 
 
 **For direct manifest deploy:**
 ```bash
-kubectl apply -f operator-deployment.yaml   # creates TARGET_DIR_NAME-system namespace
+kubectl apply -f operator-deployment.yaml   # creates kserve-operator-system namespace
 bash setup-credentials.sh                   # creates pull secret in all namespaces
 # Operator auto-creates KServeRawMode CR — installation begins automatically
 ```
@@ -74,7 +74,7 @@ operator-sdk run bundle <your-bundle-image> --pull-secret-name docker-pull-secre
 
 If `setup-credentials.sh` was not generated, create the secret manually:
 ```bash
-for ns in default TARGET_DIR_NAME-system olm operators; do
+for ns in default kserve-operator-system olm operators; do
   kubectl get ns $ns &>/dev/null || continue   # skip namespaces that don't exist yet
   kubectl create secret docker-registry docker-pull-secret \
     --docker-server=<registry> \
@@ -93,7 +93,7 @@ done
 Choose **one** of the following methods to deploy the operator into your cluster.
 
 #### Option A: Manual Manifests (Standard)
-Deploy the operator using the pre-compiled Kubernetes manifests. This will create the `TARGET_DIR_NAME-system` namespace and start the controller.
+Deploy the operator using the pre-compiled Kubernetes manifests. This will create the `kserve-operator-system` namespace and start the controller.
 ```bash
 kubectl apply -f operator-deployment.yaml
 ```

@@ -173,6 +173,21 @@ cd "${OUTPUT_DIR}"
 ${OPERATOR_SDK} init --domain="${API_DOMAIN}" --repo="${GO_MODULE}"
 ${OPERATOR_SDK} create api --group="operator" --version="v1alpha1" --kind="KServeRawMode" --resource=true --controller=true
 
+# Hardcode the operator's runtime namespace to 'kserve-operator-system' regardless
+# of -t / TARGET_DIR_NAME. Predictable, well-known location for the operator pod;
+# decoupled from the Go project directory name.
+KUSTOMIZATION_FILE="config/default/kustomization.yaml"
+if [ -f "${KUSTOMIZATION_FILE}" ]; then
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' "s|^namespace: .*$|namespace: kserve-operator-system|" "${KUSTOMIZATION_FILE}"
+    else
+        sed -i "s|^namespace: .*$|namespace: kserve-operator-system|" "${KUSTOMIZATION_FILE}"
+    fi
+    echo "Kustomize namespace pinned to: kserve-operator-system"
+else
+    echo "WARNING: ${KUSTOMIZATION_FILE} not found — kustomize namespace will use operator-sdk default."
+fi
+
 # Patch installModes in the base CSV so it is preserved as source-of-truth.
 # NOTE: make bundle regenerates installModes from operator-sdk defaults (AllNamespaces=true),
 # so we ALSO patch the bundle CSV after make bundle runs (see below). yq is used for
@@ -727,10 +742,10 @@ cat > "${PACKAGE_DIR}/setup-credentials.sh" <<'CREDS_EOF'
 #
 # Namespace lifecycle:
 #   default                   — always exists
-#   *-system                  — created by: kubectl apply -f operator-deployment.yaml
+#   kserve-operator-system    — created by: kubectl apply -f operator-deployment.yaml (direct deploy) or operator-sdk run bundle (OLM)
 #   olm, operators            — created by: operator-sdk olm install
 #   cert-manager              — created by the user when installing cert-manager (cluster prerequisite, NOT installed by the operator)
-#   <KServe target namespace> — created by the user before deploying (default name: 'kserve', overridable via spec.kserveNamespace in the CR)
+#   <KServe target namespace> — created by the user before deploying (default name: 'kserve', overridable by setting OperatorGroup.targetNamespaces)
 # =============================================================================
 set -e
 
@@ -800,12 +815,12 @@ CREDS_EOF
 if [[ "$OSTYPE" == "darwin"* ]]; then
     sed -i '' \
         -e "s|__SECRET_NAME__|${SECRET_NAME}|g" \
-        -e "s|__SYSTEM_NS__|${TARGET_DIR_NAME}-system|g" \
+        -e "s|__SYSTEM_NS__|kserve-operator-system|g" \
         "${PACKAGE_DIR}/setup-credentials.sh"
 else
     sed -i \
         -e "s|__SECRET_NAME__|${SECRET_NAME}|g" \
-        -e "s|__SYSTEM_NS__|${TARGET_DIR_NAME}-system|g" \
+        -e "s|__SYSTEM_NS__|kserve-operator-system|g" \
         "${PACKAGE_DIR}/setup-credentials.sh"
 fi
 chmod +x "${PACKAGE_DIR}/setup-credentials.sh"

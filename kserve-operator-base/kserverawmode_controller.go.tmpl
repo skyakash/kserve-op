@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -35,8 +36,11 @@ import (
 )
 
 const defaultCRName = "kserve-rawmode"
-const defaultCRNamespace = "default"
-const defaultKServeNamespace = "kserve"
+
+// fallbackCRNamespace is used by auto-init when WATCH_NAMESPACE is not set
+// (e.g. during local `make run` outside of OLM). In OLM-managed deploys,
+// WATCH_NAMESPACE is always injected from the OperatorGroup's targetNamespaces.
+const fallbackCRNamespace = "kserve"
 
 // KServeRawModeReconciler reconciles a KServeRawMode object
 type KServeRawModeReconciler struct {
@@ -59,13 +63,15 @@ func (r *KServeRawModeReconciler) setPhase(ctx context.Context, instance *operat
 	return nil
 }
 
-// resolveKServeNamespace returns the target KServe namespace from the CR spec,
-// falling back to the default "kserve" if not specified.
-func resolveKServeNamespace(instance *operatorv1alpha1.KServeRawMode) string {
-	if instance.Spec.KServeNamespace != "" {
-		return instance.Spec.KServeNamespace
+// resolveCRNamespace returns the namespace where auto-init should create
+// the default CR. It reads WATCH_NAMESPACE (injected by OLM from the
+// OperatorGroup's targetNamespaces) and falls back to "kserve" only if the
+// env var is unset, which happens outside of OLM (e.g. local `make run`).
+func resolveCRNamespace() string {
+	if ns := os.Getenv("WATCH_NAMESPACE"); ns != "" {
+		return ns
 	}
-	return defaultKServeNamespace
+	return fallbackCRNamespace
 }
 
 // validateCertManagerPresent checks that cert-manager CRDs are registered in
@@ -118,8 +124,11 @@ func (r *KServeRawModeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
-	targetNS := resolveKServeNamespace(&instance)
-	logger.Info("Starting installation of KServe Raw Mode", "generation", instance.Generation, "kserveNamespace", targetNS)
+	// The CR's own namespace IS the install target. The OperatorGroup's
+	// targetNamespaces (via WATCH_NAMESPACE) determines where the CR can
+	// live, so req.Namespace is the single source of truth.
+	targetNS := req.Namespace
+	logger.Info("Starting installation of KServe Raw Mode", "generation", instance.Generation, "namespace", targetNS)
 
 	// 1. Validate cert-manager is present in the cluster.
 	// cert-manager is a pre-requisite — the operator does NOT install it.
@@ -140,7 +149,7 @@ func (r *KServeRawModeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err := r.setPhase(ctx, &instance, "InstallingCRDs"); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := applyManifests(ctx, r.Client, "assets/02-kserve-crds/kserve-crds.yaml"); err != nil {
+	if err := applyManifests(ctx, r.Client, "assets/02-kserve-crds/kserve-crds.yaml", targetNS); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -148,7 +157,7 @@ func (r *KServeRawModeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err := r.setPhase(ctx, &instance, "InstallingRBAC"); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := applyManifests(ctx, r.Client, "assets/03-kserve-rbac/kserve-rbac.yaml"); err != nil {
+	if err := applyManifests(ctx, r.Client, "assets/03-kserve-rbac/kserve-rbac.yaml", targetNS); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -156,7 +165,7 @@ func (r *KServeRawModeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err := r.setPhase(ctx, &instance, "InstallingCore"); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := applyManifests(ctx, r.Client, "assets/04-kserve-core/kserve-core.yaml"); err != nil {
+	if err := applyManifests(ctx, r.Client, "assets/04-kserve-core/kserve-core.yaml", targetNS); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := waitForNamespacePodsReady(ctx, r.Client, targetNS); err != nil {
@@ -167,11 +176,11 @@ func (r *KServeRawModeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err := r.setPhase(ctx, &instance, "InstallingRuntimes"); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := applyManifests(ctx, r.Client, "assets/05-kserve-runtimes/kserve-cluster-resources.yaml"); err != nil {
+	if err := applyManifests(ctx, r.Client, "assets/05-kserve-runtimes/kserve-cluster-resources.yaml", targetNS); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("Installation successfully completed!", "kserveNamespace", targetNS)
+	logger.Info("Installation successfully completed!", "namespace", targetNS)
 
 	// Record the generation we successfully reconciled so we don't re-run on
 	// the next status-only re-trigger.
@@ -185,46 +194,47 @@ func (r *KServeRawModeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 }
 
 // ensureDefaultCR checks whether any KServeRawMode CR exists in the cluster.
-// If none is found, it creates a default one so the operator begins installing
+// If none is found, it creates a default one in the namespace dictated by
+// the OperatorGroup (via WATCH_NAMESPACE), so the operator begins installing
 // KServe automatically without requiring a manual `kubectl apply`.
 func (r *KServeRawModeReconciler) ensureDefaultCR(ctx context.Context) error {
 	logger := log.FromContext(ctx).WithName("auto-init")
 
+	crNamespace := resolveCRNamespace()
+
 	// Check if a CR already exists by trying to GET the default name.
 	existing := &operatorv1alpha1.KServeRawMode{}
-	err := r.Get(ctx, types.NamespacedName{Name: defaultCRName, Namespace: defaultCRNamespace}, existing)
+	err := r.Get(ctx, types.NamespacedName{Name: defaultCRName, Namespace: crNamespace}, existing)
 	if err == nil {
-		logger.Info("KServeRawMode CR already exists, skipping auto-creation", "name", defaultCRName)
+		logger.Info("KServeRawMode CR already exists, skipping auto-creation", "name", defaultCRName, "namespace", crNamespace)
 		return nil
 	}
 	if !errors.IsNotFound(err) {
 		return fmt.Errorf("failed to check for existing KServeRawMode CR: %w", err)
 	}
 
-	// Also check if *any* CR exists (in case the user created one with a different name)
+	// Also check if *any* CR exists in the watched namespace (in case the
+	// user created one with a different name).
 	var list operatorv1alpha1.KServeRawModeList
-	if err := r.List(ctx, &list); err != nil {
+	if err := r.List(ctx, &list, client.InNamespace(crNamespace)); err != nil {
 		return fmt.Errorf("failed to list KServeRawMode CRs: %w", err)
 	}
 	if len(list.Items) > 0 {
-		logger.Info("Found existing KServeRawMode CR(s), skipping auto-creation", "count", len(list.Items))
+		logger.Info("Found existing KServeRawMode CR(s), skipping auto-creation", "count", len(list.Items), "namespace", crNamespace)
 		return nil
 	}
 
-	// No CR exists — create the default one.
-	// NOTE: The user is responsible for creating the kserveNamespace before deploying
-	// the operator. The CR defaults to "kserve" but can be overridden via spec.kserveNamespace.
+	// No CR exists — create the default one. The CR's namespace IS the
+	// install target; the operator will install KServe into crNamespace.
 	cr := &operatorv1alpha1.KServeRawMode{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      defaultCRName,
-			Namespace: defaultCRNamespace,
+			Namespace: crNamespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/created-by": "auto-init",
 			},
 		},
-		Spec: operatorv1alpha1.KServeRawModeSpec{
-			KServeNamespace: defaultKServeNamespace,
-		},
+		Spec: operatorv1alpha1.KServeRawModeSpec{},
 	}
 	if err := r.Create(ctx, cr); err != nil {
 		if errors.IsAlreadyExists(err) {
@@ -236,8 +246,7 @@ func (r *KServeRawModeReconciler) ensureDefaultCR(ctx context.Context) error {
 
 	logger.Info("Auto-created default KServeRawMode CR — KServe installation will begin",
 		"name", defaultCRName,
-		"namespace", defaultCRNamespace,
-		"kserveNamespace", defaultKServeNamespace,
+		"namespace", crNamespace,
 	)
 	return nil
 }
