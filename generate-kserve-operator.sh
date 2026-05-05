@@ -932,6 +932,92 @@ fi
 chmod +x "${PACKAGE_DIR}/setup-credentials.sh"
 echo "Generated setup-credentials.sh in the customer package (credentials provided at runtime — not embedded)."
 
+# Generate enable-ingress.sh — wraps the ConfigMap patch + controller restart
+# needed to flip KServe from RawDeployment-no-Ingress mode (default) to
+# create-Ingress-via-<class> mode. Always generated; only relevant if the
+# user wants external URLs via an ingress controller (nginx, haproxy, etc.).
+cat > "${PACKAGE_DIR}/enable-ingress.sh" <<'INGRESS_EOF'
+#!/bin/bash
+# =============================================================================
+# enable-ingress.sh — enable Kubernetes Ingress creation in KServe
+#
+# Patches inferenceservice-config so KServe creates Ingress resources for
+# InferenceServices. By default KServe in Raw mode disables this — you only
+# need this script if you want external-URL access via an ingress controller
+# (nginx, haproxy, traefik, etc.).
+#
+# Usage:
+#   bash enable-ingress.sh                      # default: ns=kserve, class=nginx
+#   KSERVE_NS=my-kserve bash enable-ingress.sh  # custom KServe ns
+#   bash enable-ingress.sh --class haproxy      # custom ingress class
+#
+# Prerequisites:
+#   - KServe is installed in $KSERVE_NS (CR phase Ready, controller pod up)
+#   - Your chosen ingress controller is installed and registered as an
+#     IngressClass on the cluster
+#
+# After running:
+#   Existing InferenceServices were created without an Ingress and need to
+#   be recreated to pick up the new config:
+#     kubectl delete isvc <name>
+#     kubectl apply -f <isvc-yaml>
+# =============================================================================
+set -e
+
+KSERVE_NS="${KSERVE_NS:-kserve}"
+INGRESS_CLASS="nginx"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --class) INGRESS_CLASS="$2"; shift 2 ;;
+        --ns)    KSERVE_NS="$2"; shift 2 ;;
+        -h|--help)
+            sed -n '3,24p' "$0" | sed 's/^# \?//'
+            exit 0
+            ;;
+        *) echo "Unknown arg: $1"; echo "Usage: bash enable-ingress.sh [--class <name>] [--ns <kserve-ns>]"; exit 1 ;;
+    esac
+done
+
+if ! kubectl get cm inferenceservice-config -n "${KSERVE_NS}" >/dev/null 2>&1; then
+    echo "❌ ConfigMap inferenceservice-config not found in namespace '${KSERVE_NS}'."
+    echo "   Has KServe been installed there?  Check: kubectl get kserverawmode -A"
+    exit 1
+fi
+
+echo "Patching inferenceservice-config in '${KSERVE_NS}':"
+echo "  ingressClassName       = ${INGRESS_CLASS}"
+echo "  disableIngressCreation = false"
+
+# The 'ingress' field is a JSON-encoded string inside the ConfigMap — parse,
+# modify, re-serialize. --force-conflicts takes ownership from the operator's
+# SSA field manager.
+kubectl get cm inferenceservice-config -n "${KSERVE_NS}" -o json \
+  | INGRESS_CLASS="${INGRESS_CLASS}" python3 -c "
+import json, sys, os
+cm = json.load(sys.stdin)
+ing = json.loads(cm['data']['ingress'])
+ing['ingressClassName'] = os.environ['INGRESS_CLASS']
+ing['disableIngressCreation'] = False
+cm['data']['ingress'] = json.dumps(ing)
+cm['metadata'].pop('managedFields', None)
+print(json.dumps(cm))
+" | kubectl apply --server-side --force-conflicts -f - >/dev/null
+
+echo "Restarting kserve-controller-manager..."
+kubectl rollout restart deployment kserve-controller-manager -n "${KSERVE_NS}" >/dev/null
+kubectl wait --for=condition=Ready pods -l control-plane=kserve-controller-manager -n "${KSERVE_NS}" --timeout=120s
+
+echo ""
+echo "✅ KServe Ingress creation enabled (class: ${INGRESS_CLASS}, ns: ${KSERVE_NS})."
+echo ""
+echo "Existing InferenceServices need to be recreated to pick up the new config:"
+echo "   kubectl delete isvc <name>"
+echo "   kubectl apply -f <isvc-yaml>"
+INGRESS_EOF
+chmod +x "${PACKAGE_DIR}/enable-ingress.sh"
+echo "Generated enable-ingress.sh — customer runs this to enable external-URL access via an ingress controller."
+
 
 if [ "$GEN_OLM_BUNDLE" = true ]; then
     if [[ "$OSTYPE" == "darwin"* ]]; then

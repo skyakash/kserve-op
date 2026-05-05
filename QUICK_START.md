@@ -292,27 +292,17 @@ kubectl wait --for=condition=Ready pods -l app.kubernetes.io/component=controlle
 **Patch KServe to enable Ingress creation with nginx:**
 
 ```bash
-KSERVE_NS=kserve  # adjust if you deployed to a custom-named namespace
+# Default — installs into 'kserve' ns, sets ingressClassName=nginx
+bash enable-ingress.sh
 
-# The 'ingress' field is a JSON-encoded string inside the ConfigMap — must be
-# parsed, modified, and re-serialized. --force-conflicts takes ownership from
-# the operator's Server-Side-Apply field manager.
-kubectl get cm inferenceservice-config -n "${KSERVE_NS}" -o json | python3 -c "
-import json, sys
-cm = json.load(sys.stdin)
-ing = json.loads(cm['data']['ingress'])
-ing['ingressClassName'] = 'nginx'
-ing['disableIngressCreation'] = False
-cm['data']['ingress'] = json.dumps(ing)
-cm['metadata'].pop('managedFields', None)
-print(json.dumps(cm))
-" | kubectl apply --server-side --force-conflicts -f -
+# Custom KServe namespace:
+KSERVE_NS=my-kserve bash enable-ingress.sh
 
-# Restart the controller and wait for the new pod to be Ready before applying
-# any ISVC — skipping the wait races the webhook.
-kubectl rollout restart deployment kserve-controller-manager -n "${KSERVE_NS}"
-kubectl wait --for=condition=Ready pods -l control-plane=kserve-controller-manager -n "${KSERVE_NS}" --timeout=120s
+# Different ingress class (e.g. haproxy, traefik):
+bash enable-ingress.sh --class haproxy
 ```
+
+The script patches the `inferenceservice-config` ConfigMap (the `ingress` field is a JSON-encoded string inside the ConfigMap — needs parse / modify / re-serialize, and the operator owns the field via Server-Side Apply so `--force-conflicts` is required), then restarts `kserve-controller-manager` and waits for the new pod to be Ready before returning. See [enable-ingress.sh](enable-ingress.sh) source for details.
 
 **Add local DNS entry** (for Docker Desktop / local clusters):
 ```bash
