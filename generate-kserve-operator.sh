@@ -874,7 +874,8 @@ echo "Pull secret '${SECRET_NAME}' configured."
 echo ""
 echo "Reminder: cert-manager must be installed BEFORE deploying the operator (cluster prerequisite)."
 echo "Reminder: the KServe target namespace must be created BEFORE deploying the operator."
-echo "  Default name: 'kserve' (overridable via spec.kserveNamespace in the CR)."
+echo "  Default name: 'kserve' (override by setting the OperatorGroup's targetNamespaces"
+echo "                or 'operator-sdk run bundle --install-mode SingleNamespace=<your-ns>')."
 echo "  Example:  kubectl create namespace kserve"
 CREDS_EOF
 # Inject generator-time values (secret name, system namespace)
@@ -915,7 +916,24 @@ echo "You can share the '${TARGET_DIR_NAME}-package' folder for immediate deploy
 
 if [ "$GEN_OLM_BUNDLE" = true ]; then
     echo ""
-    echo "To deploy via OLM, execute the following command:"
-    echo "  operator-sdk run bundle ${IMAGE_TAG}-bundle"
+    if [ -n "${CUSTOMER_REGISTRY}" ]; then
+        echo "To deploy via OLM (customer-registry flow):"
+        echo "  1. cd ${PACKAGE_DIR##*/}"
+        echo "  2. bash mirror-images.sh --archive             # then transfer to customer site"
+        echo "  3. bash mirror-images.sh --load --user <u> --pass <t>"
+        echo "  4. bash setup-credentials.sh --user <u> --pass <t>"
+        echo "  5. bash deploy-bundle.sh dockerhub-creds       # interactive helper"
+        echo ""
+        echo "  …or run operator-sdk directly against the customer registry:"
+        echo "  operator-sdk run bundle ${CUSTOMER_BUNDLE} \\"
+        echo "    --namespace kserve-operator-system \\"
+        echo "    --install-mode SingleNamespace=kserve \\"
+        echo "    --pull-secret-name dockerhub-creds"
+    else
+        echo "To deploy via OLM, execute the following command:"
+        echo "  operator-sdk run bundle ${IMAGE_TAG}-bundle \\"
+        echo "    --namespace kserve-operator-system \\"
+        echo "    --install-mode SingleNamespace=kserve"
+    fi
 fi
 echo "================================================================="
