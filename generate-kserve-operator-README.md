@@ -257,13 +257,14 @@ If deploying to a customer environment with a private registry (e.g., Artifactor
   -b -p -o
 ```
 
-This generates three additional files in `p-kserve-operator-package/`:
+The generated `p-kserve-operator-package/` directory contains up to four helper scripts:
 
-| File | Purpose |
-|---|---|
-| `mirror-images.sh` | Copies operator + bundle images from source registry → customer registry. Supports 3 modes: **online** (direct), **archive** (save to tar), **load** (push from tar). |
-| `deploy-bundle.sh` | Interactive installer: prompts whether to use OLM bundle or direct `kubectl apply`. |
-| `setup-credentials.sh` | Creates pull secrets. Accepts `--user`/`--pass` CLI args or prompts interactively. |
+| File | When generated | Purpose |
+|---|---|---|
+| `setup-credentials.sh` | Always | Creates `dockerhub-creds` pull secret in `default`, `kserve-operator-system`, `olm`, `operators`. Pre-flight checks cert-manager + namespaces and fails fast if anything is missing. Accepts `--user`/`--pass` CLI args or prompts interactively. |
+| `enable-ingress.sh` | Always | Patches KServe's `inferenceservice-config` ConfigMap to enable Ingress creation, restarts the controller, waits for Ready. Use this only when you want external URLs via an ingress controller. Accepts `KSERVE_NS` env var (default `kserve`) and `--class` flag (default `nginx`). |
+| `mirror-images.sh` | With `--customer-registry` | Copies operator + bundle images from build registry → customer registry. Supports 3 modes: **online** (direct), **archive** (save to tar), **load** (push from tar). |
+| `deploy-bundle.sh` | With `--customer-registry` | One-command OLM install — wraps `operator-sdk run bundle ... --install-mode SingleNamespace=${KSERVE_NS:-kserve} --pull-secret-name <secret>`. Interactive: prompts for OLM bundle vs. direct `kubectl apply` path. |
 
 > **Cluster prerequisites for both deployer workflows:**
 > 1. cert-manager installed (`kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.17.2/cert-manager.yaml`)

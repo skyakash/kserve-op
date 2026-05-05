@@ -33,7 +33,7 @@ graph LR
   
   subgraph CustomerPkg [Inside Deployer Package]
     direction TB
-    Scripts[Helper Scripts:\n• mirror-images.sh\n• setup-credentials.sh\n• deploy-bundle.sh]:::helper
+    Scripts[Helper Scripts:<br/>• setup-credentials.sh (always)<br/>• enable-ingress.sh (always)<br/>• mirror-images.sh (--customer-registry)<br/>• deploy-bundle.sh (--customer-registry)]:::helper
   end
 
   Upstream --> RawExtract

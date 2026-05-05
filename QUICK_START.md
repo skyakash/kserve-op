@@ -81,10 +81,11 @@ If the operator will be deployed to a customer environment with a **private regi
 
 > ℹ️ `--pull-secret` sets the pull secret name baked into the generated scripts. Credentials are **never embedded** — they are provided at runtime by the customer.
 
-When `--customer-registry` is used, the generated package (`p-kserve-operator-package/`) contains **three** helper scripts:
-- `setup-credentials.sh` — creates pull secrets in all required namespaces *(always generated, regardless of `--customer-registry`)*
-- `mirror-images.sh` — copies images from the source registry to the customer registry (3 modes: online, archive, load) *(only with `--customer-registry`)*
-- `deploy-bundle.sh` — interactive installer (OLM bundle or direct `kubectl apply`) *(only with `--customer-registry`)*
+The generated package (`p-kserve-operator-package/`) contains up to **four** helper scripts:
+- `setup-credentials.sh` — creates pull secrets in all required namespaces (default, kserve-operator-system, olm, operators) *(always generated)*
+- `enable-ingress.sh` — patches KServe to enable Kubernetes Ingress creation; restarts the controller. Used when you want external-URL access via an ingress controller. *(always generated)*
+- `mirror-images.sh` — copies operator + bundle images from the build registry to a customer registry (3 modes: online, archive, load) *(only with `--customer-registry`)*
+- `deploy-bundle.sh` — one-command OLM install helper that wraps `operator-sdk run bundle ... --install-mode SingleNamespace=${KSERVE_NS}` *(only with `--customer-registry`)*
 
 Both `mirror-images.sh` and `setup-credentials.sh` use the same `--user`/`--pass` arguments and will prompt interactively if not provided.
 
@@ -302,7 +303,7 @@ KSERVE_NS=my-kserve bash enable-ingress.sh
 bash enable-ingress.sh --class haproxy
 ```
 
-The script patches the `inferenceservice-config` ConfigMap (the `ingress` field is a JSON-encoded string inside the ConfigMap — needs parse / modify / re-serialize, and the operator owns the field via Server-Side Apply so `--force-conflicts` is required), then restarts `kserve-controller-manager` and waits for the new pod to be Ready before returning. See [enable-ingress.sh](enable-ingress.sh) source for details.
+The script patches the `inferenceservice-config` ConfigMap (the `ingress` field is a JSON-encoded string inside the ConfigMap — needs parse / modify / re-serialize, and the operator owns the field via Server-Side Apply so `--force-conflicts` is required), then restarts `kserve-controller-manager` and waits for the new pod to be Ready before returning. Run `cat enable-ingress.sh` (or `bash enable-ingress.sh -h`) for details.
 
 **Add local DNS entry** (for Docker Desktop / local clusters):
 ```bash
@@ -341,7 +342,7 @@ curl -s -H "Content-Type: application/json" \
 
 ## Part C: Alternative — Offline / Air-Gapped Model Test
 
-If your cluster cannot reach `gs://` (Google Cloud Storage) to download model weights, `Step 5` above will fail. Use this PVC-based offline alternative instead.
+If your cluster cannot reach `gs://` (Google Cloud Storage) to download model weights, the iris ISVC in Step 6 above will fail (the default `sklearn-iris.yaml` uses a `gs://` `storageUri`). Use this PVC-based offline alternative instead.
 
 ### 1. Create a local PersistentVolumeClaim
 ```bash

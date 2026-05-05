@@ -118,7 +118,7 @@ Failed to run bundle: error waiting for CSV to install: csv failed:
   message: "AllNamespaces InstallModeType not supported, cannot configure to watch all namespaces"
 ```
 
-**Root cause:** [`deploy-bundle.sh`](../p-kserve-operator-package/deploy-bundle.sh) (lines 32–37) calls:
+**Root cause:** the generated `deploy-bundle.sh` (heredoc emitted by `generate-kserve-operator.sh`) calls:
 ```bash
 operator-sdk run bundle "${BUNDLE_IMAGE}" --pull-secret-name "${PULL_SECRET}"
 ```
