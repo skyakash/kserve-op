@@ -1,6 +1,14 @@
 # End-to-End Test Report — Customer Registry & Variations
 
-**Date:** 2026-05-05
+This report covers two independent end-to-end test runs against `feat/no-bundled-certmanager`:
+
+- **[Run 1](#run-1--initial-validation-2026-05-05)** — initial validation that surfaced 5 issues; 4 of 5 tests passed, 1 failed. All issues fixed in follow-up commits and T08 re-verified.
+- **[Run 2](#run-2--regression-after-fixes--t12-added-2026-05-05)** — full re-run after the fixes landed, plus T12 (Part C PVC-based offline model) added.
+
+---
+
+## Run 1 — initial validation (2026-05-05)
+
 **Branch:** `feat/no-bundled-certmanager`
 **Tester:** Claude Code (Opus 4.7) on behalf of Akash Deo
 **Cluster:** Docker Desktop Kubernetes v1.34.1
@@ -329,3 +337,245 @@ If you used --customer-registry, run mirror-images.sh first, then deploy:
 ## Total runtime
 
 ~50 minutes of active testing (5 tests + cleanups).
+
+
+---
+
+## Run 2 — regression after fixes + T12 added (2026-05-05)
+
+**Branch:** `feat/no-bundled-certmanager`
+**Tester:** Claude Code (Opus 4.7) on behalf of Akash Deo
+**Cluster:** Docker Desktop Kubernetes v1.34.1 (fresh reset)
+**Repo HEAD at start:** `fd6fb47`
+
+### Goal
+
+Re-validate every Run 1 test on a clean cluster against the now-fixed code (5 issues from Run 1 resolved + helper scripts simplified), and add **T12** to validate Part C (PVC-based offline model — was missed in Run 1).
+
+### Tag plan
+
+| Tag | Purpose | Tests |
+|---|---|---|
+| `v500` | Standard build (no `--customer-registry`) | T04 |
+| `v501` | `--customer-registry docker.io/akashdeohuf` build | T07, T08, T10, T12 |
+| `v502` | `--cert <test-CA>` build (no push) | T11 |
+
+### Summary
+
+| ID | Scenario | Run 1 | Run 2 |
+|---|---|---|---|
+| T04 | No customer-registry, custom `my-kserve` ns, external URL | ✅ | ✅ |
+| T07 | Customer-registry archive+load, default `kserve`, in-cluster URL | ✅ | ✅ |
+| T08 | Customer-registry, `deploy-bundle.sh` helper, default ns, in-cluster | ❌ → ✅ (fixed) | ✅ |
+| T10 | Customer-registry archive+load, custom `my-kserve` ns, external URL | ✅ | ✅ |
+| T12 | Part C — PVC-based offline model on top of T10 install | (not run) | ✅ |
+| T11 | `--cert` build-time CA injection | ✅ | ✅ |
+
+**Net: 6 of 6 PASS in Run 2** — all Run 1 fixes confirmed working, T12 (Part C) added and passing.
+
+### Per-test results
+
+#### T04 — No customer-registry, custom `my-kserve` ns, external URL
+
+**Status:** ✅ PASS (Run 2)
+
+**Setup:**
+- Generated `v500` (no `--customer-registry`); image pushed to `docker.io/akashneha/kserve-raw-operator:v500` (+ `-bundle`)
+- Verified package contains the new `enable-ingress.sh` helper (commit `fd6fb47`)
+- Cluster prereqs: cert-manager v1.17.2, OLM v0.28.0
+- Namespaces: `my-kserve` + `kserve-operator-system`
+- Deploy: `operator-sdk run bundle docker.io/akashneha/...:v500-bundle --namespace kserve-operator-system --install-mode SingleNamespace=my-kserve`
+
+**Results:**
+
+| Check | Result |
+|---|---|
+| `enable-ingress.sh` generated in package | ✅ confirmed |
+| CR auto-created in `my-kserve` (NOT `default`) | ✅ |
+| CSV `Succeeded`, CR `Ready` in ~40s | ✅ |
+| `bash enable-ingress.sh` (with `KSERVE_NS=my-kserve`) — single command, output: `✅ KServe Ingress creation enabled (class: nginx, ns: my-kserve)` | ✅ |
+| Iris ISVC Ready in ~30s | ✅ |
+| Ingress ADDRESS=`localhost` populated | ✅ |
+| External URL: `curl http://sklearn-iris-default.example.com/v1/models/sklearn-iris:predict` | ✅ `{"predictions":[1]}` |
+
+**Difference vs Run 1:** The new `enable-ingress.sh` helper replaces the previously inline 15-line bash block. Run 2 confirms the helper works correctly with custom namespace via `KSERVE_NS=` env var.
+
+#### T07 — Customer-registry archive+load, default `kserve` ns, in-cluster URL
+
+**Status:** ✅ PASS (Run 2)
+
+**Setup:**
+- Generated `v501` with `--customer-registry docker.io/akashdeohuf`
+- All 4 helper scripts present: `setup-credentials.sh`, `enable-ingress.sh`, `mirror-images.sh`, `deploy-bundle.sh`
+- `mirror-images.sh --archive` → `images/operator.tar` (31M) + `images/bundle.tar` (15K)
+- `mirror-images.sh --load --user akashdeohuf --pass <PAT>` → both images now in `docker.io/akashdeohuf/kserve-raw-operator:v501` (+ `-bundle`)
+
+**`setup-credentials.sh` fail-fast pre-flight (NEW behavior validated):**
+
+```
+Pre-flight checks...
+   ✅ cert-manager CRD registered
+   ✅ namespace 'kserve-operator-system' exists
+   ✅ namespace 'olm' exists
+   ✅ namespace 'operators' exists
+
+Creating pull secret 'dockerhub-creds' in namespace 'default'...
+[...4 secrets created...]
+
+✅ Pull secret 'dockerhub-creds' created in: default, kserve-operator-system, olm, operators.
+
+Next: deploy the operator (Step 4 in QUICK_START.md):
+   bash deploy-bundle.sh dockerhub-creds      # interactive helper
+   # ─ or ─
+   operator-sdk run bundle <bundle-image> ...
+```
+
+The old "Reminder: cert-manager must be installed BEFORE..." nagging messages are gone — replaced with active verification + clean success output.
+
+**Results:**
+
+| Check | Result |
+|---|---|
+| Bundle pulls from `akashdeohuf` (customer registry) | ✅ |
+| OperatorGroup auto-created targeting `kserve` | ✅ |
+| CSV `Succeeded`, CR `Ready` in ~35s | ✅ |
+| Iris ISVC Ready in ~30s | ✅ |
+| In-cluster curl returns `{"predictions":[1]}` | ✅ |
+
+#### T08 — `deploy-bundle.sh` helper (validates the fix from Run 1)
+
+**Status:** ✅ PASS (Run 2, was ❌ in Run 1 → fixed in `89edc6f`)
+
+**Setup:** reused v501 customer-registry images already mirrored to `akashdeohuf` from T07.
+
+**Execution:**
+```
+echo "A" | bash deploy-bundle.sh dockerhub-creds
+```
+
+**What now happens** (vs. Run 1's failure):
+
+| Aspect | Run 1 (broken) | Run 2 (fixed) |
+|---|---|---|
+| Deploy target ns | `default` (wrong) | `kserve-operator-system` ✅ |
+| OperatorGroup | auto-created with AllNamespaces config | auto-created with `targetNamespaces: [kserve]` (because `--install-mode SingleNamespace=kserve` now passed) ✅ |
+| CSV phase | `Failed` (UnsupportedOperatorGroup) | `Succeeded` ✅ |
+| Trailing message | `"Operator installed via OLM."` (false) | `"Operator installed via OLM into 'kserve-operator-system'."` (accurate, only printed on success because of `set -e`) ✅ |
+| CR Ready | n/a (CSV failed) | `Ready` in ~20s ✅ |
+| Iris test | n/a | `{"predictions":[1]}` ✅ |
+
+The fix in `89edc6f` (passing `--namespace`, `--install-mode`, and adding `set -e` so the success line only fires on success) is now confirmed to work end-to-end via the helper script.
+
+#### T10 — Customer-registry archive+load, custom `my-kserve` ns, external URL
+
+**Status:** ✅ PASS (Run 2)
+
+**Setup:** reused v501 customer-registry images. Same as T07 setup, but namespace = `my-kserve` and added nginx-ingress + `enable-ingress.sh`.
+
+**Deploy:** `operator-sdk run bundle docker.io/akashdeohuf/.../v501-bundle --namespace kserve-operator-system --install-mode SingleNamespace=my-kserve --pull-secret-name dockerhub-creds`
+
+**Results:**
+
+| Check | Result |
+|---|---|
+| CR auto-created in `my-kserve`, KServe runtime in `my-kserve`, `kserve` ns empty | ✅ all `kserve` baked refs rewritten to `my-kserve` |
+| CR phase Ready in ~35s | ✅ |
+| `enable-ingress.sh` (with `KSERVE_NS=my-kserve`) — single command | ✅ |
+| External URL: `curl http://sklearn-iris-default.example.com/...` | ✅ `{"predictions":[1]}` |
+
+#### T12 — Part C: PVC-based offline model (NEW in Run 2)
+
+**Status:** ✅ PASS (Run 2 only — wasn't in Run 1)
+
+**Goal:** Validate Part C — air-gapped model serving via PVC instead of `gs://` URI. Layered on top of T10's install (customer registry + custom my-kserve + nginx-ingress).
+
+**Steps:**
+1. Created `PersistentVolumeClaim/offline-models-pvc` (1Gi, RWO)
+2. Downloaded `model.joblib` (5.3K) from `https://storage.googleapis.com/kfserving-examples/models/sklearn/1.0/model/model.joblib`
+3. Mounted PVC to a temp `busybox` pod
+4. `kubectl exec model-loader -- mkdir -p /mnt/pvc/sklearn/iris/1.0/model`
+5. `kubectl cp /tmp/model.joblib default/model-loader:/mnt/pvc/sklearn/iris/1.0/model/model.joblib`
+6. Verified file in PVC: `model.joblib  5.3K`
+7. Deleted temp pod
+8. Deployed `InferenceService sklearn-iris-pvc` with `storageUri: pvc://offline-models-pvc/sklearn/iris/1.0/model`
+9. ISVC Ready in ~20s
+10. In-cluster curl: `http://sklearn-iris-pvc-predictor.default.svc.cluster.local/v1/models/sklearn-iris-pvc:predict`
+
+**Results:**
+
+| Check | Result |
+|---|---|
+| PVC bound (Docker Desktop's local-path provisioner) | ✅ |
+| Model side-load via `kubectl cp` | ✅ |
+| PVC-backed ISVC `Ready` in ~20s | ✅ |
+| In-cluster curl returns `{"predictions":[1]}` | ✅ |
+
+This validates that KServe's PVC storage-initializer code path works correctly when running under our generated operator. Useful for true air-gapped clusters where `gs://` and other public model URIs are unreachable.
+
+#### T11 — `--cert` build-time CA injection (build-only)
+
+**Status:** ✅ PASS (Run 2)
+
+**Setup:**
+- Generated self-signed test CA: `/tmp/test-ca.crt` with `CN=kserve-op-test-ca-T11-Run2`
+- `./generate-kserve-operator.sh ... -i docker.io/akashneha/kserve-raw-operator:v502 --cert /tmp/test-ca.crt -b` (build only — no push, no deploy)
+
+**Verification (rebuild target=builder, decode trust bundle):**
+```
+subject=CN=kserve-op-test-ca-T11-Run2
+issuer=CN=kserve-op-test-ca-T11-Run2
+✅ Subject found via openssl decode
+```
+
+The Dockerfile's builder stage correctly received the `COPY test-ca.crt /usr/local/share/ca-certificates/test-ca.crt` and `RUN update-ca-certificates` directives. The cert lands in the builder's `/etc/ssl/certs/ca-certificates.crt`, validating the corporate-proxy / MITM trust chain use case.
+
+### Run 2 Summary
+
+| ID | Scenario | Run 1 | Run 2 |
+|---|---|---|---|
+| T04 | No customer-registry, custom `my-kserve` ns, external URL | ✅ | ✅ |
+| T07 | Customer-registry archive+load, default `kserve`, in-cluster URL | ✅ | ✅ |
+| T08 | Customer-registry, `deploy-bundle.sh` helper, default ns, in-cluster | ❌ → ✅ (fixed) | ✅ |
+| T10 | Customer-registry archive+load, custom `my-kserve` ns, external URL | ✅ | ✅ |
+| T12 | Part C — PVC-based offline model on top of T10 install | (not run) | ✅ |
+| T11 | `--cert` build-time CA injection | ✅ | ✅ |
+
+**Net Run 2: 6 of 6 PASS.** All Run 1 fixes confirmed working. T12 (Part C) added and passing.
+
+### What Run 2 specifically validated (post-fix)
+
+1. **`deploy-bundle.sh` fix (commit `89edc6f`)**: T08 now passes cleanly. CSV `Succeeded` (was `Failed`); install lands in `kserve-operator-system` (was wrongly `default`); accurate success message gated on exit code.
+2. **`setup-credentials.sh` fail-fast (commit `f666812`)**: pre-flight check confirms cert-manager + 3 namespaces before creating any secrets; clean ✅ output replaces the previous nagging "Reminder:" lines.
+3. **`enable-ingress.sh` helper (commit `fd6fb47`)**: NEW. Replaces the 15-line bash+Python heredoc in QUICK_START Step 6b with `bash enable-ingress.sh` (with `KSERVE_NS` env var override). Used in T04 + T10. Single command.
+4. **Reordered Part B Steps 2/3 (commit `563fcee`)**: Namespaces created before credentials. T07/T08/T10 all confirm setup-credentials.sh succeeds when run in this order (would have failed silently in the reverse order).
+5. **Generator success message customer-registry-aware (commit `42f157e`)**: T07's generation showed the akashdeohuf-bundle deploy command rather than akashneha (build registry).
+6. **QUICK_START Step 4 simplification (commits `1898ff1`, `36b9eb2`)**: Single deploy command with `BUNDLE_IMAGE` placeholder; redundant manual `kubectl create secret` step removed.
+
+### Side-finding during Run 2: OLM teardown quirk
+
+When tearing down the cluster between tests, **OLM's `olm` namespace got stuck in `Terminating` state** after `kubectl delete ns olm`. Root cause: the OLM `packageserver` ClusterServiceVersion has a `csv-cleanup` finalizer, and the `v1.packages.operators.coreos.com` APIService references a service in the deleting namespace.
+
+**This is NOT caused by our operator** — it's a known Kubernetes / OLM teardown pattern that affects any cluster where you naively delete OLM's namespace.
+
+**Resolution sequence used:**
+1. `kubectl delete apiservice v1.packages.operators.coreos.com`
+2. `kubectl get csv -A -o name | xargs kubectl patch ... finalizers=[]`
+3. `kubectl get ns olm -o json | python3 -c "...spec.finalizers=[]" | kubectl replace --raw /api/v1/namespaces/olm/finalize`
+
+**Recommendation:** the proper way to remove OLM is `operator-sdk olm uninstall` rather than `kubectl delete ns`. This isn't documented anywhere in QUICK_START.md (we don't typically remove OLM there), but worth knowing for test cleanup scripts. **Not blocking; not a project bug.**
+
+### Cleanup performed
+
+- All test installs torn down (operator, KServe, ISVCs, namespaces, CRDs, ClusterRoleBindings, ClusterRoles, Webhooks, OperatorGroups, Subscriptions, CSVs, CatalogSources)
+- nginx-ingress + ingressclass + admission webhook removed
+- ingress-nginx, kserve, my-kserve, kserve-operator-system namespaces deleted
+- cert-manager + OLM left in place (cluster prereqs — safe to leave; user can `operator-sdk olm uninstall` + `kubectl delete ns cert-manager` to fully clean if desired)
+- Test CA + private key + iris model files deleted from `/tmp`
+- `images/` directory deleted from `p-kserve-operator-package/`
+- `docker logout docker.io` performed
+- Docker images on Docker Hub at `akashneha/kserve-raw-operator:v500,v501,v502` and `akashdeohuf/kserve-raw-operator:v501,v501-bundle` remain. **Recommended:** delete via Docker Hub UI if not needed for further testing.
+- **🔐 PAT rotation strongly recommended** — both akashneha and akashdeohuf PATs have now appeared in two separate transcripts.
+
+### Total runtime
+
+~70 minutes of active testing (6 tests + cleanups + the OLM teardown quirk debugging).
