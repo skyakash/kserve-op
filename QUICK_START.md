@@ -224,6 +224,8 @@ kubectl create namespace kserve-operator-system  || true
 
 **Option A: OLM Bundle (recommended, `InstallMode: SingleNamespace`)**
 
+`operator-sdk run bundle` accepts an `--install-mode` flag that auto-creates the OperatorGroup with the right `targetNamespaces` — so you don't need to define it yourself. Pass `SingleNamespace=<your-kserve-ns>` and it wires up the rest.
+
 ```bash
 # 4a. (Optional) Pull secret in the operator namespace, only if your images are private.
 #     Skip if pulling from a public registry (Docker Hub anonymous, etc.).
@@ -233,26 +235,17 @@ kubectl create secret docker-registry dockerhub-creds \
   --docker-password=<registry-token> \
   -n kserve-operator-system
 
-# 4b. OperatorGroup targets the chosen KServe namespace.
-#     This is what drives WATCH_NAMESPACE in the operator pod, which the
-#     auto-init reads to decide where to create the default CR.
-kubectl apply -f - <<EOF
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: kserve-operator-og
-  namespace: kserve-operator-system
-spec:
-  targetNamespaces:
-    - ${KSERVE_NS}
-EOF
-
-# 4c. Deploy via OLM bundle into the dedicated operator namespace.
+# 4b. Single-command deploy. The --install-mode flag auto-creates an
+#     OperatorGroup in kserve-operator-system targeting ${KSERVE_NS}; the
+#     downward-API WATCH_NAMESPACE then drives the auto-init's CR placement.
 #     Replace <version> with your actual image version tag (e.g. v403, v404).
 operator-sdk run bundle docker.io/akashneha/kserve-raw-operator:<version>-bundle \
-  --namespace kserve-operator-system
+  --namespace kserve-operator-system \
+  --install-mode "SingleNamespace=${KSERVE_NS}"
 # (add `--pull-secret-name dockerhub-creds` if 4a was needed)
 ```
+
+> **Why no OperatorGroup yaml?** OLM forbids embedding OperatorGroups in bundles (they're user-controlled installation parameters, not operator artifacts). `operator-sdk run bundle --install-mode` generates one on the fly named `operator-sdk-og` in the operator's namespace.
 
 > **Bundle image tag:** The bundle image tag is printed at the end of `generate-kserve-operator.sh` output, in the format `<image-tag>-bundle`.
 > Example: if you built with `-i docker.io/akashneha/kserve-raw-operator:v403`, the bundle image is `docker.io/akashneha/kserve-raw-operator:v403-bundle`.

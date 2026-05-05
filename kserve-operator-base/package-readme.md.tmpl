@@ -109,11 +109,14 @@ If you have Operator Lifecycle Manager installed, you can deploy the operator as
 > The bundle image is built with `--provenance=false --sbom=false` to produce a flat single-manifest image that OLM can pull on both `linux/amd64` and `linux/arm64` hosts without platform resolution errors.
 
 ```bash
-# Run the bundle (pass your pull secret if images are on a private registry)
-# The bundle runs with InstallMode=SingleNamespace. Before running, create an
-# OperatorGroup in kserve-operator-system that targets the KServe namespace.
+# Run the bundle. --install-mode auto-creates the OperatorGroup pointed at
+# your KServe namespace (default 'kserve' — change to anything you want, e.g.
+# SingleNamespace=my-kserve, and the operator's apply-time rewrite installs
+# KServe there). Pre-create both namespaces (kserve-operator-system + the
+# KServe target ns) before running.
 operator-sdk run bundle <your-bundle-image-tag> \
   --namespace kserve-operator-system \
+  --install-mode SingleNamespace=kserve \
   --pull-secret-name docker-pull-secret   # omit if image is public
 ```
 
