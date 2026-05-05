@@ -685,49 +685,73 @@ MIRROR_EOF
 # deploy-bundle.sh — Install the KServe Raw Operator
 #
 # OPTION A — OLM bundle install (recommended when OLM is available)
-#   Uses 'operator-sdk run bundle' which automatically creates a temporary
-#   CatalogSource on the cluster. No opm, no FBC image, no CatalogSource
-#   YAML needed.
-#   Prerequisites: OLM installed (operator-sdk olm install)
-#   To uninstall: operator-sdk cleanup ${TARGET_DIR_NAME}
+#   Uses 'operator-sdk run bundle --install-mode SingleNamespace=<ns>' which
+#   automatically creates the OperatorGroup with the right targetNamespaces
+#   and a temporary CatalogSource on the cluster. No opm, no FBC image, no
+#   manual OperatorGroup yaml needed.
+#   Prerequisites:
+#     - OLM installed (operator-sdk olm install)
+#     - Namespace 'kserve-operator-system' created (operator pod home)
+#     - The KServe target namespace (default 'kserve') created
+#   To uninstall: operator-sdk cleanup ${TARGET_DIR_NAME} -n kserve-operator-system
 #
 # OPTION B — Direct manifest install (no OLM required)
 #   Standard kubectl apply. Simpler but bypasses OLM lifecycle management.
+#   Requires the same two namespaces above.
 #
-# Usage: bash deploy-bundle.sh [pull-secret-name]
+# Usage:
+#   bash deploy-bundle.sh [pull-secret-name]
+#
+# Environment variables:
+#   KSERVE_NS    KServe target namespace (default: 'kserve'). Override to
+#                install KServe into a custom-named namespace.
 # =============================================================================
+set -e
 
 BUNDLE_IMAGE="${CUSTOMER_BUNDLE}"
+OPERATOR_NS="kserve-operator-system"
+KSERVE_NS="\${KSERVE_NS:-kserve}"
 PULL_SECRET="\${1:-}"
 
 echo "================================================================="
 echo " KServe Raw Operator — Deployment"
+echo "================================================================="
+echo "  Bundle image     : \${BUNDLE_IMAGE}"
+echo "  Operator ns      : \${OPERATOR_NS}"
+echo "  KServe target ns : \${KSERVE_NS}"
 echo "================================================================="
 echo "  A) OLM bundle  : operator-sdk run bundle (recommended)"
 echo "  B) Direct YAML : kubectl apply -f operator-deployment.yaml"
 echo "================================================================="
 read -p "Enter choice [A/B]: " CHOICE
 
-case "$(echo "\${CHOICE}" | tr '[:lower:]' '[:upper:]')" in
+case "\$(echo "\${CHOICE}" | tr '[:lower:]' '[:upper:]')" in
   A)
     echo ""
     echo "Installing via OLM bundle: \${BUNDLE_IMAGE}"
+    echo "  --namespace=\${OPERATOR_NS}"
+    echo "  --install-mode=SingleNamespace=\${KSERVE_NS}"
     if [ -n "\${PULL_SECRET}" ]; then
-        operator-sdk run bundle "\${BUNDLE_IMAGE}" --pull-secret-name "\${PULL_SECRET}"
+        operator-sdk run bundle "\${BUNDLE_IMAGE}" \\
+            --namespace "\${OPERATOR_NS}" \\
+            --install-mode "SingleNamespace=\${KSERVE_NS}" \\
+            --pull-secret-name "\${PULL_SECRET}"
     else
-        operator-sdk run bundle "\${BUNDLE_IMAGE}"
+        operator-sdk run bundle "\${BUNDLE_IMAGE}" \\
+            --namespace "\${OPERATOR_NS}" \\
+            --install-mode "SingleNamespace=\${KSERVE_NS}"
     fi
     echo ""
-    echo "Operator installed via OLM."
-    echo "To uninstall: operator-sdk cleanup ${TARGET_DIR_NAME}"
+    echo "Operator installed via OLM into '\${OPERATOR_NS}'."
+    echo "To uninstall: operator-sdk cleanup ${TARGET_DIR_NAME} -n \${OPERATOR_NS}"
     ;;
   B)
     echo ""
     echo "Installing via direct manifest..."
     kubectl apply -f operator-deployment.yaml
     echo ""
-    echo "Operator deployed. Apply your CR when ready:"
-    echo "  kubectl apply -f kserve-rawmode.yaml"
+    echo "Operator deployed. The operator auto-creates the KServeRawMode CR"
+    echo "in '\${KSERVE_NS}'; no manual 'kubectl apply -f kserve-rawmode.yaml' needed."
     ;;
   *)
     echo "Invalid choice. Exiting."
