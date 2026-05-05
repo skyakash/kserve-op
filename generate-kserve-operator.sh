@@ -839,6 +839,57 @@ if [[ -z "${DOCKER_PASSWORD}" ]]; then
     read -rsp "Registry password/token: " DOCKER_PASSWORD; echo
 fi
 
+# Pre-flight: validate required cluster prerequisites BEFORE creating any secrets.
+# Fails fast with a clear list of what's missing so the user can fix and re-run.
+echo "Pre-flight checks..."
+MISSING=()
+
+# 1. cert-manager is a hard prerequisite for the operator (validated at reconcile
+#    time too — we surface it here for a clearer earlier signal).
+if ! kubectl get crd certificates.cert-manager.io >/dev/null 2>&1; then
+    MISSING+=("cert-manager — CRD certificates.cert-manager.io not registered")
+fi
+
+# 2. Each namespace where this script will create a pull secret must already exist.
+#    kubectl create secret cannot create the namespace as a side effect, so
+#    missing namespaces would be silently skipped and cause confusing pull
+#    failures later.
+for ns in "${SYSTEM_NS}" olm operators; do
+    if ! kubectl get ns "${ns}" >/dev/null 2>&1; then
+        MISSING+=("namespace '${ns}' — required to create the pull secret in")
+    fi
+done
+
+if [ "${#MISSING[@]}" -gt 0 ]; then
+    echo ""
+    echo "❌ Prerequisites not met:"
+    for item in "${MISSING[@]}"; do
+        echo "   - ${item}"
+    done
+    echo ""
+    echo "Fix the missing items below, then re-run this script."
+    echo ""
+    echo "   # cert-manager (cluster prerequisite — pinned stable release):"
+    echo "   kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.17.2/cert-manager.yaml"
+    echo "   kubectl wait --for=condition=Ready pods --all -n cert-manager --timeout=180s"
+    echo ""
+    echo "   # OLM (creates olm + operators namespaces):"
+    echo "   operator-sdk olm install"
+    echo ""
+    echo "   # Operator pod's home namespace (always required):"
+    echo "   kubectl create namespace ${SYSTEM_NS}"
+    echo ""
+    echo "   # KServe target namespace (where the CR + KServe runtime will live):"
+    echo "   kubectl create namespace kserve   # or your custom name (e.g. my-kserve)"
+    exit 1
+fi
+
+echo "   ✅ cert-manager CRD registered"
+echo "   ✅ namespace '${SYSTEM_NS}' exists"
+echo "   ✅ namespace 'olm' exists"
+echo "   ✅ namespace 'operators' exists"
+echo ""
+
 create_secret() {
     local ns=$1
     echo "Creating pull secret '${SECRET_NAME}' in namespace '${ns}'..."
@@ -850,33 +901,21 @@ create_secret() {
         --dry-run=client -o yaml | kubectl apply -f -
 }
 
-# Always-available namespace
 create_secret default
-
-# Operator system namespace (only present for direct manifest deploy)
-if kubectl get ns "${SYSTEM_NS}" &>/dev/null; then
-    create_secret "${SYSTEM_NS}"
-else
-    echo "Namespace '${SYSTEM_NS}' not found — apply operator-deployment.yaml first to create it (direct deploy only)."
-fi
-
-# OLM namespaces — present after 'operator-sdk olm install'
-for ns in olm operators; do
-    if kubectl get ns "${ns}" &>/dev/null; then
-        create_secret "${ns}"
-    else
-        echo "Namespace '${ns}' not found — run 'operator-sdk olm install' first if using OLM bundle deploy."
-    fi
-done
+create_secret "${SYSTEM_NS}"
+create_secret olm
+create_secret operators
 
 echo ""
-echo "Pull secret '${SECRET_NAME}' configured."
+echo "✅ Pull secret '${SECRET_NAME}' created in: default, ${SYSTEM_NS}, olm, operators."
 echo ""
-echo "Reminder: cert-manager must be installed BEFORE deploying the operator (cluster prerequisite)."
-echo "Reminder: the KServe target namespace must be created BEFORE deploying the operator."
-echo "  Default name: 'kserve' (override by setting the OperatorGroup's targetNamespaces"
-echo "                or 'operator-sdk run bundle --install-mode SingleNamespace=<your-ns>')."
-echo "  Example:  kubectl create namespace kserve"
+echo "Next: deploy the operator (Step 4 in QUICK_START.md):"
+echo "   bash deploy-bundle.sh ${SECRET_NAME}      # interactive helper (only if --customer-registry was used)"
+echo "   # ─ or ─"
+echo "   operator-sdk run bundle <bundle-image> \\"
+echo "       --namespace ${SYSTEM_NS} \\"
+echo "       --install-mode SingleNamespace=<your-kserve-ns> \\"
+echo "       --pull-secret-name ${SECRET_NAME}"
 CREDS_EOF
 # Inject generator-time values (secret name, system namespace)
 if [[ "$OSTYPE" == "darwin"* ]]; then
