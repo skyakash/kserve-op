@@ -203,26 +203,20 @@ For the **customer-registry** flow, pass the **customer-registry** credentials h
 
 **Option A: OLM Bundle (recommended, `InstallMode: SingleNamespace`)**
 
-`operator-sdk run bundle` accepts an `--install-mode` flag that auto-creates the OperatorGroup with the right `targetNamespaces` — so you don't need to define it yourself. Pass `SingleNamespace=<your-kserve-ns>` and it wires up the rest.
+`operator-sdk run bundle` accepts an `--install-mode` flag that auto-creates the OperatorGroup with the right `targetNamespaces` — you don't define it yourself. Pass `SingleNamespace=<your-kserve-ns>` and it wires up the rest.
 
 ```bash
-# 4a. (Optional) Pull secret in the operator namespace, only if your images are private.
-#     Skip if pulling from a public registry (Docker Hub anonymous, etc.).
-kubectl create secret docker-registry dockerhub-creds \
-  --docker-server=docker.io \
-  --docker-username=<registry-user> \
-  --docker-password=<registry-token> \
-  -n kserve-operator-system
-
-# 4b. Single-command deploy. The --install-mode flag auto-creates an
-#     OperatorGroup in kserve-operator-system targeting ${KSERVE_NS}; the
-#     downward-API WATCH_NAMESPACE then drives the auto-init's CR placement.
-#     Replace <version> with your actual image version tag (e.g. v403, v404).
+# Single-command deploy. --install-mode auto-creates an OperatorGroup in
+# kserve-operator-system targeting ${KSERVE_NS}; the downward-API
+# WATCH_NAMESPACE then drives the auto-init's CR placement.
+# Replace <version> with your actual image version tag (e.g. v403, v404).
 operator-sdk run bundle docker.io/akashneha/kserve-raw-operator:<version>-bundle \
   --namespace kserve-operator-system \
-  --install-mode "SingleNamespace=${KSERVE_NS}"
-# (add `--pull-secret-name dockerhub-creds` if 4a was needed)
+  --install-mode "SingleNamespace=${KSERVE_NS}" \
+  --pull-secret-name dockerhub-creds
 ```
+
+> **`--pull-secret-name`** references the secret created by `setup-credentials.sh` in Step 3. If you skipped Step 3 because your images are public, drop this flag.
 
 > **Why no OperatorGroup yaml?** OLM forbids embedding OperatorGroups in bundles (they're user-controlled installation parameters, not operator artifacts). `operator-sdk run bundle --install-mode` generates one on the fly named `operator-sdk-og` in the operator's namespace.
 
