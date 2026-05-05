@@ -206,11 +206,17 @@ For the **customer-registry** flow, pass the **customer-registry** credentials h
 `operator-sdk run bundle` accepts an `--install-mode` flag that auto-creates the OperatorGroup with the right `targetNamespaces` — you don't define it yourself. Pass `SingleNamespace=<your-kserve-ns>` and it wires up the rest.
 
 ```bash
+# Set BUNDLE_IMAGE to where your bundle actually lives:
+#   • Standard build:           <build-registry>/<image>:<tag>-bundle
+#   • --customer-registry path: <customer-registry>/<image>:<tag>-bundle
+#     (after `bash mirror-images.sh ...` has copied/loaded it there).
+# In all cases the suffix is `-bundle` (the operator image's tag + `-bundle`).
+BUNDLE_IMAGE=<your-bundle-image>
+
 # Single-command deploy. --install-mode auto-creates an OperatorGroup in
 # kserve-operator-system targeting ${KSERVE_NS}; the downward-API
 # WATCH_NAMESPACE then drives the auto-init's CR placement.
-# Replace <version> with your actual image version tag (e.g. v403, v404).
-operator-sdk run bundle docker.io/akashneha/kserve-raw-operator:<version>-bundle \
+operator-sdk run bundle "${BUNDLE_IMAGE}" \
   --namespace kserve-operator-system \
   --install-mode "SingleNamespace=${KSERVE_NS}" \
   --pull-secret-name dockerhub-creds
