@@ -11,28 +11,29 @@ Before running the script, ensure you meet the following requirements on your lo
 
 1. **KServe Source Code**: The `kserve-master` directory must exist in the exact same parent directory as this script. The script uses Kustomize to build manifests directly from this source code.
 2. **Kustomize**: The `kustomize` CLI tool must be installed and available in your system `$PATH` (The KServe `Makefile` normally installs this in `bin/kustomize`, but global availability is recommended).
-3. **Python 3**: Python is required to safely inject the `RawDeployment` configuration directly into the KServe `inferenceservice-config` ConfigMap block without corrupting the YAML structure.
-4. **curl**: Used to pull the specific version of the `cert-manager` manifest.
+3. **Python 3 + pyyaml**: Python is required to safely inject the `RawDeployment` configuration directly into the KServe `inferenceservice-config` ConfigMap block without corrupting the YAML structure.
 
 ### Installing Prerequisites
 If you are missing the required tools, you can install them using the following commands:
 
 **macOS (Homebrew):**
 ```bash
-brew install kustomize python curl
+brew install kustomize python
+pip3 install pyyaml
 ```
 
 **Linux — Ubuntu / Debian:**
 ```bash
 sudo apt update
-sudo apt install python3 curl -y
+sudo apt install -y python3 python3-pip
+pip3 install pyyaml
 curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
 sudo mv kustomize /usr/local/bin/
 ```
 
 **Linux — RHEL / CentOS / Fedora (x86_64):**
 ```bash
-sudo dnf install -y python3 python3-pip curl
+sudo dnf install -y python3 python3-pip
 pip3 install pyyaml
 curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
 sudo mv kustomize /usr/local/bin/
@@ -71,14 +72,15 @@ Enter the name of the target directory to create (e.g., my-kserve-deploy):
 If you type `kserve-prod-deploy`, the script will create this folder right next to the script and populate it.
 
 ## What it Outputs
-The generated directory will contain carefully split sub-directories alongside deployment execution scripts:
+The generated directory will contain carefully split sub-directories alongside deployment execution scripts.
 
-1. **`01-cert-manager/`**: Contains the `v1.17.2` release of cert-manager. This directory is extracted by the raw script for reference and standalone deployment. **Important:** The KServe operator does not install cert-manager itself — it must be installed as a cluster pre-requisite before deploying the operator.
-2. **`02-kserve-crds/`**: Contains the Custom Resource Definitions (like `InferenceService`, `ClusterServingRuntime`, and `LLMInferenceServiceConfig`).
-3. **`03-kserve-rbac/`**: Contains the necessary ClusterRoles and authentication manifests.
-4. **`04-kserve-core/`**: Contains the KServe Controller Manager deployments. **Crucially, the script patches the inline ConfigMap so `defaultDeploymentMode` is explicitly set to `RawDeployment`, and explicitly appends the `selfsigned-issuer` so webhooks can establish TLS.**
-5. **`05-kserve-runtimes/`**: Contains the out-of-the-box predictors (Scikit-Learn, PyTorch, HuggingFace).
-6. **`06-sample-model/`**: Contains a fully configured `sklearn-iris.yaml` Service and an `iris-input.json` test payload to immediately verify your cluster is functioning.
+> **cert-manager is NOT bundled.** It is a cluster prerequisite — install it on the target cluster yourself before running `install.sh`. The numbering below intentionally starts at `02` (slot `01` is reserved for cert-manager). See [QUICK_START.md](QUICK_START.md#step-0--install-cert-manager-cluster-pre-requisite) for cert-manager install commands. The generated `install.sh` runs a pre-flight check for cert-manager CRDs and exits with a clear error if it is missing.
+
+1. **`02-kserve-crds/`**: Contains the Custom Resource Definitions (like `InferenceService`, `ClusterServingRuntime`, and `LLMInferenceServiceConfig`).
+2. **`03-kserve-rbac/`**: Contains the necessary ClusterRoles and authentication manifests.
+3. **`04-kserve-core/`**: Contains the KServe Controller Manager deployments. **Crucially, the script patches the inline ConfigMap so `defaultDeploymentMode` is explicitly set to `RawDeployment`, and explicitly appends the `selfsigned-issuer` so webhooks can establish TLS.**
+4. **`05-kserve-runtimes/`**: Contains the out-of-the-box predictors (Scikit-Learn, PyTorch, HuggingFace).
+5. **`06-sample-model/`**: Contains a fully configured `sklearn-iris.yaml` Service and an `iris-input.json` test payload to immediately verify your cluster is functioning.
 
 ### Installation Shell Script and Documentation
 Finally, the script automatically generates two top-level execution files inside your new target directory:

@@ -49,7 +49,7 @@ graph LR
 
 ## Phase 2: The Deployer Journey
 
-This illustrates how the generated deliverables travel from the builder to the target customer environment, handling both online and strictly air-gapped scenarios.
+This illustrates how the generated deliverables travel from the builder to the target customer environment, covering the **standard** path (public/private registry, no image transport) and the **air-gapped customer-registry** path (images shipped as tarballs, requires the `--customer-registry` generator flag).
 
 ```mermaid
 flowchart TD
@@ -64,20 +64,22 @@ flowchart TD
   subgraph Artifact Handling
     direction LR
     Builder -- Generates --> Pkg[Deployer Package]:::local
-    Pkg -- "Option A: Online Mode\n(mirror-images.sh)" --> DirectPush[Copy directly to\nCustomer Registry]:::network
-    Pkg -- "Option B: Air-Gapped\n(mirror-images.sh --archive)" --> TarFile[Save to TAR archives\nimages/*.tar]:::local
+    Pkg -- "Standard path\n(image already on a registry the cluster can reach)" --> Direct[No image transport needed]:::manual
+    Pkg -- "--customer-registry path:\nmirror-images.sh online" --> DirectPush[Copy directly to\nCustomer Registry]:::network
+    Pkg -- "--customer-registry path:\nmirror-images.sh --archive" --> TarFile[Save to TAR archives\nimages/*.tar]:::local
     TarFile -- "Manual Transfer\n(USB / Secure Gateway)" --> Customer
   end
 
   subgraph Customer Environment
     Customer -- "(mirror-images.sh --load)" --> Reg[(Customer Private Registry)]:::network
     DirectPush --> Reg
-    Reg -.-> PullSecrets["setup-credentials.sh\n(Creates Pull Secrets)"]:::k8s
-    PullSecrets --> OLMRun["deploy-bundle.sh\n(Installs OLM Bundle)"]:::k8s
+    Reg -.-> PullSecrets["setup-credentials.sh\n(only if image is private)"]:::k8s
+    PullSecrets --> Deploy["operator-sdk run bundle\n--install-mode SingleNamespace=kserve\n(or deploy-bundle.sh — only with\n--customer-registry)"]:::k8s
+    Direct --> Deploy
   end
 
   subgraph Target Cluster Deploy
-    OLMRun --> K8sOp[KServe Operator Pod Running]:::k8s
+    Deploy --> K8sOp[KServe Operator Pod Running]:::k8s
   end
 ```
 
@@ -151,11 +153,16 @@ sequenceDiagram
     Script-->>Builder: Standalone package (p-kserve-operator-package/)
     
     Builder-->>Customer: Hand over package (Archive or Direct Transfer)
-    
+
+    note over Customer,K8s: --customer-registry path only:
     Customer->>RegCust: Run mirror-images.sh (Copy images via skopeo)
-    Customer->>K8s: Run setup-credentials.sh (Create Pull Secrets)
-    Customer->>K8s: Run deploy-bundle.sh (Install OLM Bundle)
-    
+    Customer->>K8s: Run setup-credentials.sh (only if image is private)
+
+    note over Customer,K8s: Standard path (or after the above):
+    Customer->>K8s: kubectl create namespace kserve + kserve-operator-system
+    Customer->>K8s: operator-sdk run bundle --install-mode SingleNamespace=kserve
+    note over K8s: --install-mode auto-creates the OperatorGroup;<br/>no manual yaml needed
+
     K8s->>RegCust: Pull Operator & Bundle Images
     K8s-->>Operator: Start Controller Pod
     

@@ -81,12 +81,14 @@ If the operator will be deployed to a customer environment with a **private regi
 
 > ℹ️ `--pull-secret` sets the pull secret name baked into the generated scripts. Credentials are **never embedded** — they are provided at runtime by the customer.
 
-The generated package (`p-kserve-operator-package/`) contains three helper scripts:
-- `mirror-images.sh` — copies images from the source registry to the customer registry (3 modes: online, archive, load)
-- `setup-credentials.sh` — creates pull secrets in all required namespaces
-- `deploy-bundle.sh` — interactive installer (OLM bundle or direct `kubectl apply`)
+When `--customer-registry` is used, the generated package (`p-kserve-operator-package/`) contains **three** helper scripts:
+- `setup-credentials.sh` — creates pull secrets in all required namespaces *(always generated, regardless of `--customer-registry`)*
+- `mirror-images.sh` — copies images from the source registry to the customer registry (3 modes: online, archive, load) *(only with `--customer-registry`)*
+- `deploy-bundle.sh` — interactive installer (OLM bundle or direct `kubectl apply`) *(only with `--customer-registry`)*
 
 Both `mirror-images.sh` and `setup-credentials.sh` use the same `--user`/`--pass` arguments and will prompt interactively if not provided.
+
+> Without `--customer-registry`, the package contains only `setup-credentials.sh` plus the static manifests (`operator-deployment.yaml`, `kserve-rawmode.yaml`, `06-sample-model/`, `README.md`). The standard install flow uses `operator-sdk run bundle` directly — see Part B Step 4 below.
 
 ---
 

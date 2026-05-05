@@ -11,10 +11,11 @@ However, to make your operator publicly visible correctly in the Web UI of `Oper
 Follow these official steps to push the operator to the open-source community:
 
 ### 1. Ensure Metadata is Complete
-Double-check your generated bundle YAML to ensure your maintainer info, icon, and description are accurate:
+Double-check your generated bundle YAML to ensure your maintainer info, icon, and description are accurate. The CSV filename uses your project name (the `-t` value from the generator, e.g. `p-kserve-operator`):
 ```bash
 # Check the generated bundle's ClusterServiceVersion (CSV)
-cat bundle/manifests/kserve-raw-operator.clusterserviceversion.yaml
+ls p-kserve-operator/bundle/manifests/*.clusterserviceversion.yaml
+cat p-kserve-operator/bundle/manifests/p-kserve-operator.clusterserviceversion.yaml
 ```
 
 ### 2. Fork the Community Repository
@@ -27,11 +28,11 @@ Clone your fork locally, and add a new directory for your operator under `operat
 git clone https://github.com/<your-username>/community-operators
 cd community-operators
 
-# create a directory for your operator and version
-mkdir -p operators/kserve-raw-operator/0.1.0/
+# create a directory for your operator and version (use your operator's name)
+mkdir -p operators/kserve-raw-operator/0.0.1/
 
 # copy your generated bundle contents inside
-cp -r /path/to/kserve-op/p-kserve-operator/bundle/* operators/kserve-raw-operator/0.1.0/
+cp -r /path/to/kserve-op/p-kserve-operator/bundle/* operators/kserve-raw-operator/0.0.1/
 ```
 
 ### 4. Test the Submission Locally

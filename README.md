@@ -1,4 +1,4 @@
-linux # KServe Offline Operator Tooling
+# KServe Offline Operator Tooling
 
 This repository contains powerful automated tooling designed to parse, extract, configure, and package **KServe** for standalone offline and air-gapped deployments utilizing `RawDeployment` architecture (bypassing Knative and Istio requirements).
 
@@ -65,7 +65,7 @@ sudo dnf install -y skopeo   # optional — only needed for --customer-registry 
 This script aggressively parses a local checkout of the `kserve-master` repository and builds a heavily customized, isolated Kustomize deployment package. 
 
 * **Purpose**: Creates an independent directory containing all KServe core components pre-patched for `"defaultDeploymentMode": "RawDeployment"`.
-* **Action**: Extracts `Cert-Manager`, KServe CRDs, RoleBindings, and built-in cluster predictors.
+* **Action**: Extracts KServe CRDs, RBAC, core controller manifests (patched for Raw mode), and built-in cluster predictors. cert-manager is **not** bundled — it is a cluster prerequisite installed separately.
 * **Component Template Base**: `kserve-raw-base/` 
   * *Contains the markdown READMEs, quick-install shell scripts, and sample Iris payloads dynamically injected into the extracted folder.*
 * **Command Syntax**: 
@@ -123,20 +123,22 @@ This script utilizes `operator-sdk` (v1.42.0+) to dynamically scaffold a custom 
    kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml
    kubectl wait --for=condition=Ready pods --all -n cert-manager --timeout=180s
 
-   # Create required namespace and OperatorGroup (for SingleNamespace install mode)
+   # Create the two namespaces (KServe target — default 'kserve' — and the operator pod's home)
    kubectl create namespace kserve
    kubectl create namespace kserve-operator-system
 
    # Option A: OLM bundle (recommended — requires OLM pre-installed)
+   #          --install-mode auto-creates the OperatorGroup with the right targetNamespaces.
    operator-sdk olm install
    operator-sdk run bundle docker.io/your-org/kserve-raw-operator:v1-bundle \
-     --pull-secret-name <your-pull-secret> \
-     --namespace kserve-operator-system
+     --namespace kserve-operator-system \
+     --install-mode SingleNamespace=kserve
+   # (add `--pull-secret-name <secret>` if your image is private)
 
    # Option B: Direct manifests (no OLM needed)
    kubectl apply -f p-kserve-operator-package/operator-deployment.yaml
    ```
-   > The operator **auto-creates** the `KServeRawMode` CR on startup — KServe installation begins immediately.
+   > The operator **auto-creates** the `KServeRawMode` CR on startup in the namespace dictated by the OperatorGroup's `targetNamespaces` (default `kserve`) — KServe installation begins immediately.
 5. **Monitor** the installation progress and **validate** the Iris inference model:
    ```bash
    # Watch phase progression (no manual sleep needed)

@@ -148,7 +148,7 @@ Once the parameters are provided, the script executes the following sequence aut
 3. **Code Templating**: Dynamically copies the `.tmpl` files from the `kserve-operator-base/` directory and injects your CLI variables via `sed`, creating three crucial Go files:
     - `api/.../kserverawmode_types.go`: Defines the Custom Resource schema (`KServeRawMode`).
     - `internal/controller/apply.go`: Implements a Kubernetes **Server-Side Apply** engine to parse and apply the embedded YAML files, bypassing standard annotation size limits.
-    - `internal/controller/kserverawmode_controller.go`: Writes the main reconciliation loop. This loop explicitly maps the execution order, applies the `.yaml` assets, ensures the `kserve` namespace exists for RBAC bindings, and **polls for real pod readiness** (5-second retries, 5-minute timeout) before deploying `ServingRuntimes` to prevent Webhook race conditions. The reconciler is **idempotent** — it re-applies manifests on every spec change, using `ObservedGeneration` to avoid unnecessary reconciles.
+    - `internal/controller/kserverawmode_controller.go`: Writes the main reconciliation loop. This loop explicitly maps the execution order, derives the install namespace from the CR's `metadata.namespace` (which the OperatorGroup's `targetNamespaces` constrains), applies the `.yaml` assets with apply-time namespace rewriting (every baked `kserve` reference becomes the chosen target), and **polls for real pod readiness** (5-second retries, 5-minute timeout) before deploying `ServingRuntimes` to prevent Webhook race conditions. The reconciler is **idempotent** — it re-applies manifests on every spec change, using `ObservedGeneration` to avoid unnecessary reconciles.
 4. **Compilation**: Automatically runs `make manifests`, `make generate`, and `go mod tidy` to ensure the DeepCopy objects, RBAC roles, and go modules are perfectly aligned.
 5. **Containerization**: If requested via the `-b / --build` flag, executes `docker build` to build the operator image.
    - Note: If the `--multi-platform` flag is passed, the script calls `docker buildx build --push` directly (bypassing `make docker-buildx`) to ensure build failures are always detected. A post-push `docker manifest inspect` verification confirms the image is available in the registry.
@@ -208,35 +208,33 @@ kubectl wait --for=condition=Ready pods --all -n cert-manager --timeout=180s
 operator-sdk olm install
 kubectl get pods -n olm   # wait until all pods are Running
 
-# 2. Create the KServe namespace (must exist before operator deploys)
-kubectl create namespace kserve
-
-# 3. Create a dedicated operator namespace with OperatorGroup (required for SingleNamespace mode)
+# 2. Create the two namespaces.
+#    KSERVE_NS = where the CR + KServe runtime will live (default 'kserve';
+#                pick anything else, e.g. 'my-kserve', and apply-time YAML rewriting
+#                will install KServe there).
+KSERVE_NS=kserve
+kubectl create namespace "${KSERVE_NS}"
 kubectl create namespace kserve-operator-system
+
+# 3. (Optional) Pull secret in the operator namespace, only if your image is private.
 kubectl create secret docker-registry dockerhub-creds \
   --docker-server=docker.io \
   --docker-username=<registry-user> \
   --docker-password=<registry-token> \
   -n kserve-operator-system
-kubectl apply -f - <<'EOF'
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: kserve-operator-og
-  namespace: kserve-operator-system
-spec:
-  targetNamespaces:
-    - default
-EOF
 
-# 4. Deploy the bundle
-operator-sdk run bundle docker.io/akashneha/kserve-raw-operator:v303-bundle \
-  --pull-secret-name dockerhub-creds \
-  --namespace kserve-operator-system
+# 4. Deploy the bundle. --install-mode auto-creates an OperatorGroup
+#    targeting ${KSERVE_NS}; no manual OperatorGroup yaml needed.
+operator-sdk run bundle <your-bundle-image>:<tag>-bundle \
+  --namespace kserve-operator-system \
+  --install-mode "SingleNamespace=${KSERVE_NS}"
+# (add `--pull-secret-name dockerhub-creds` if step 3 was needed)
 
-# 5. Watch KServe auto-installation progress
+# 5. Watch KServe auto-installation progress (the CR is auto-created in ${KSERVE_NS})
 kubectl get kserverawmode -A -w
 ```
+
+> **Why no OperatorGroup yaml?** OLM forbids embedding OperatorGroups in bundles (they're user-controlled installation parameters). `operator-sdk run bundle --install-mode` generates one on the fly named `operator-sdk-og` in the operator namespace.
 
 *Note: If you provided a `--pull-secret` during generation, the generated OLM CSV will automatically include it, ensuring the bundle can be unpacked on clusters with pull restrictions.*
 
@@ -252,10 +250,10 @@ If deploying to a customer environment with a private registry (e.g., Artifactor
   -m github.com/akashdeo/p-kserve-operator \
   -d akashdeo.com \
   -s p-kserve-raw \
-  -i docker.io/akashneha/kserve-raw-operator:v300 \
+  -i docker.io/akashneha/kserve-raw-operator:<tag> \
   --customer-registry localhost:5001/myrepo \
   --pull-secret dockerhub-creds \
-  --install-mode OwnNamespace \
+  --install-mode SingleNamespace \
   -b -p -o
 ```
 
@@ -310,15 +308,15 @@ Once you submit the `KServeRawMode` CR, the operator progresses through granular
 kubectl get kserverawmode -A -w
 ```
 
-Expected output:
+Expected output (using default `kserve` namespace; the column tracks the OperatorGroup's `targetNamespaces`):
 ```
 NAMESPACE   NAME             PHASE                    AGE
-default     kserve-rawmode   ValidatingCertManager    2s
-default     kserve-rawmode   InstallingCRDs           8s
-default     kserve-rawmode   InstallingRBAC           10s
-default     kserve-rawmode   InstallingCore           11s
-default     kserve-rawmode   InstallingRuntimes       38s
-default     kserve-rawmode   Ready                    43s
+kserve      kserve-rawmode   ValidatingCertManager    2s
+kserve      kserve-rawmode   InstallingCRDs           8s
+kserve      kserve-rawmode   InstallingRBAC           10s
+kserve      kserve-rawmode   InstallingCore           11s
+kserve      kserve-rawmode   InstallingRuntimes       38s
+kserve      kserve-rawmode   Ready                    43s
 ```
 
 If cert-manager is absent, the phase shows `CertManagerNotFound` and the operator logs display an actionable error. Install cert-manager and the operator retries automatically.
