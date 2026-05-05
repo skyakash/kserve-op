@@ -314,7 +314,7 @@ kubectl wait --for=condition=Ready pods -l app.kubernetes.io/component=controlle
 
 **Patch KServe to enable Ingress creation with nginx:**
 
-The ConfigMap is owned by the operator (Server-Side Apply field manager), so `kubectl apply -f -` will warn about a missing `last-applied-configuration` annotation. The patch still succeeds; pass `--server-side` to silence the warning if it bothers you.
+The ConfigMap is owned by the operator (Server-Side Apply field manager), so a plain `kubectl apply -f -` will silently fail with a field-ownership conflict — the patch goes through but the new values don't stick. Use `--server-side --force-conflicts` and strip the existing `metadata.managedFields` to take ownership cleanly.
 
 ```bash
 # KSERVE_NS = the namespace KServe is installed into (default: 'kserve').
@@ -328,13 +328,23 @@ ingress = json.loads(cm['data']['ingress'])
 ingress['ingressClassName'] = 'nginx'
 ingress['disableIngressCreation'] = False
 cm['data']['ingress'] = json.dumps(ingress, indent=4)
+# Strip managedFields so the new field manager (kubectl) takes ownership cleanly
+cm['metadata'].pop('managedFields', None)
 print(json.dumps(cm))
-" | kubectl apply --server-side -f -
+" | kubectl apply --server-side --force-conflicts -f -
 
-# Restart controller to pick up config change
+# Verify the patch took effect (both should be the values you set above)
+kubectl get cm inferenceservice-config -n "${KSERVE_NS}" -o jsonpath='{.data.ingress}' \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print('ingressClassName=', d.get('ingressClassName')); print('disableIngressCreation=', d.get('disableIngressCreation'))"
+
+# Restart controller, wait for full readiness before applying ISVCs
 kubectl rollout restart deployment kserve-controller-manager -n "${KSERVE_NS}"
 kubectl rollout status deployment kserve-controller-manager -n "${KSERVE_NS}" --timeout=120s
+kubectl wait --for=condition=Ready pods -l control-plane=kserve-controller-manager \
+  -n "${KSERVE_NS}" --timeout=120s
 ```
+
+> Skipping the readiness wait can race the webhook — applying an ISVC before the new controller pod is fully up will fail with `failed calling webhook "inferenceservice.kserve-webhook-server.defaulter": context deadline exceeded`.
 
 **Add local DNS entry** (for Docker Desktop / local clusters):
 ```bash
