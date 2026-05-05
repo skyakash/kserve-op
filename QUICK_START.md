@@ -130,7 +130,7 @@ cd p-kserve-operator-package   # all commands below run from inside this folder
 > bash mirror-images.sh --load --user <customer-user> --pass <customer-token>
 > ```
 >
-> Then continue with the steps below. In **Step 2** pass the **customer-registry** credentials (the cluster will pull from there, not the build registry). In **Step 4** you can use `bash deploy-bundle.sh dockerhub-creds` as a one-line shortcut for the OLM install — it wraps the same `operator-sdk run bundle ... --install-mode SingleNamespace=${KSERVE_NS}` command shown there.
+> Then continue with the steps below. In **Step 3** pass the **customer-registry** credentials (the cluster will pull from there, not the build registry). In **Step 4** you can use `bash deploy-bundle.sh dockerhub-creds` as a one-line shortcut for the OLM install — it wraps the same `operator-sdk run bundle ... --install-mode SingleNamespace=${KSERVE_NS}` command shown there.
 
 ### Step 0 — Install cert-manager *(cluster pre-requisite)*
 
@@ -172,16 +172,7 @@ operator-sdk olm install
 kubectl get pods -n olm   # wait until all pods are Running
 ```
 
-### Step 2 — Set up image pull credentials *(skip if images are public)*
-```bash
-# With CLI args:
-bash setup-credentials.sh --user <registry-user> --pass <registry-token>
-
-# Or interactive (will prompt for username and password):
-bash setup-credentials.sh
-```
-
-### Step 3 — Create namespaces
+### Step 2 — Create namespaces
 
 The operator pod always runs in a fixed `kserve-operator-system` namespace. The CR and the KServe runtime live **together** in a namespace of your choice — defaults to `kserve`, but you can pick anything (e.g. `my-kserve`) and the operator's apply-time namespace rewriting will install KServe there. The OperatorGroup defined in Step 4 is the single source of truth.
 
@@ -193,6 +184,20 @@ KSERVE_NS=kserve
 kubectl create namespace "${KSERVE_NS}"          || true
 kubectl create namespace kserve-operator-system  || true
 ```
+
+> **Why this comes before credentials:** `setup-credentials.sh` (Step 3) creates pull secrets *inside* `kserve-operator-system`, `olm`, `operators`, and `default`. If those namespaces don't exist yet, the script silently skips them — and the operator pod's image pull will later fail with no obvious cause. OLM created `olm`/`operators` in Step 1; you create the other two here.
+
+### Step 3 — Set up image pull credentials *(skip if images are public)*
+
+```bash
+# With CLI args:
+bash setup-credentials.sh --user <registry-user> --pass <registry-token>
+
+# Or interactive (will prompt for username and password):
+bash setup-credentials.sh
+```
+
+For the **customer-registry** flow, pass the **customer-registry** credentials here (the cluster will pull from the customer registry, not the build registry).
 
 ### Step 4 — Deploy the operator
 
