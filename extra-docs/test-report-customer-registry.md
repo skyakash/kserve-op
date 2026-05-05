@@ -11,12 +11,12 @@
 | ID | Scenario | Status | Notes |
 |---|---|---|---|
 | T07 | Customer-registry archive+load, default `kserve` ns, in-cluster URL | ✅ PASS | Operator pulled from `akashdeohuf` (customer registry). Ready in ~20s. Iris OK. |
-| T08 | Customer-registry, `deploy-bundle.sh` helper, default ns, in-cluster | ❌ **FAIL** | **Real bug found** — script omits `--namespace` and `--install-mode`; CSV phase `Failed` (`AllNamespaces InstallModeType not supported`). |
+| T08 | Customer-registry, `deploy-bundle.sh` helper, default ns, in-cluster | ❌ → ✅ **FIXED** | Bug found and fixed in commit `2e64ee5`-style follow-up. Re-tested with v408: CSV `Succeeded`, CR `Ready`, iris `{"predictions":[1]}`. |
 | T10 | Customer-registry archive+load, custom `my-kserve` ns, external URL | ✅ PASS | Both customer-registry rewriting AND custom-namespace rewriting commute correctly. External URL serves iris. |
 | T04 | No customer-registry, custom `my-kserve` ns, external URL | ✅ PASS | (After fixing two doc issues found during execution — see findings.) |
 | T11 | `--cert` build-time CA injection | ✅ PASS | Test CA (`CN=kserve-op-test-ca-T11`) verified present in builder stage's `/etc/ssl/certs/ca-certificates.crt`. |
 
-**Net: 4 of 5 PASS, 1 FAIL with concrete actionable bug.**
+**Net: 4 of 5 PASS initially, 1 FAIL → all 5 issues fixed in follow-up commits, T08 re-tested with v408 → 5 of 5 PASS.**
 
 ## Pre-flight
 
