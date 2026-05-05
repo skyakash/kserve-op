@@ -6,6 +6,28 @@ It is composed of two primary bash automation pipelines that rely on modular tem
 
 ---
 
+## 📚 Documentation
+
+**Start here:**
+
+| Doc | What it's for |
+|---|---|
+| [QUICK_START.md](QUICK_START.md) | Copy-paste install guide — both the **builder** workflow (Part A: extract → generate → push) and the **deployer** workflow (Part B: cert-manager → OLM → run bundle → iris smoke test). The fastest path to a working install. |
+| [generate-kserve-raw-README.md](generate-kserve-raw-README.md) | Full CLI reference for the raw-extraction script. |
+| [generate-kserve-operator-README.md](generate-kserve-operator-README.md) | Full CLI reference for the operator generator (all flags, install modes, customer-registry workflow). |
+
+**Architecture & design (in [extra-docs/](extra-docs/)):**
+
+| Doc | What it's for |
+|---|---|
+| [architecture-overview.md](extra-docs/architecture-overview.md) | Visual architecture — 5 mermaid diagrams covering the build factory, deployer journey, operator brain, sequence flow, and manifest pipeline. Includes E2E test validation tables. |
+| [architecture-namespaces.md](extra-docs/architecture-namespaces.md) | Design discussion of the namespace topology and OLM install modes. The reasoning behind why the CR + KServe runtime co-locate in a single user-chosen namespace. |
+| [why-customer-registry.md](extra-docs/why-customer-registry.md) | Why image references are baked into the OLM bundle at build time and can't cleanly be overridden at deploy time — the rationale for the `--customer-registry` flag. |
+| [OPERATOR_HUB_PUBLISHING.md](extra-docs/OPERATOR_HUB_PUBLISHING.md) | How to submit the generated bundle to the public OperatorHub. |
+| [test-report-customer-registry.md](extra-docs/test-report-customer-registry.md) | End-to-end test report covering customer-registry, custom-namespace, external-URL, and `--cert` scenarios. |
+
+---
+
 ## 🛑 Prerequisites
 
 Before running the generation scripts, ensure the following dependencies are installed on your **build machine** (supports macOS and RHEL/Linux x86_64):
