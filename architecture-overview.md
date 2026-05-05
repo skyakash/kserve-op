@@ -61,24 +61,24 @@ flowchart TD
   Builder((Builder)):::local
   Customer((Customer)):::local
 
-  subgraph Artifact Handling
+  subgraph "Artifact Handling"
     direction LR
     Builder -- Generates --> Pkg[Deployer Package]:::local
-    Pkg -- "Standard path\n(image already on a registry the cluster can reach)" --> Direct[No image transport needed]:::manual
-    Pkg -- "--customer-registry path:\nmirror-images.sh online" --> DirectPush[Copy directly to\nCustomer Registry]:::network
-    Pkg -- "--customer-registry path:\nmirror-images.sh --archive" --> TarFile[Save to TAR archives\nimages/*.tar]:::local
-    TarFile -- "Manual Transfer\n(USB / Secure Gateway)" --> Customer
+    Pkg -- "Standard path<br/>(image already on a registry the cluster can reach)" --> Direct[No image transport needed]:::manual
+    Pkg -- "--customer-registry path:<br/>mirror-images.sh online" --> DirectPush[Copy directly to<br/>Customer Registry]:::network
+    Pkg -- "--customer-registry path:<br/>mirror-images.sh --archive" --> TarFile[Save to TAR archives<br/>images/*.tar]:::local
+    TarFile -- "Manual Transfer<br/>(USB / Secure Gateway)" --> Customer
   end
 
-  subgraph Customer Environment
+  subgraph "Customer Environment"
     Customer -- "(mirror-images.sh --load)" --> Reg[(Customer Private Registry)]:::network
     DirectPush --> Reg
-    Reg -.-> PullSecrets["setup-credentials.sh\n(only if image is private)"]:::k8s
-    PullSecrets --> Deploy["operator-sdk run bundle\n--install-mode SingleNamespace=kserve\n(or deploy-bundle.sh — only with\n--customer-registry)"]:::k8s
+    Reg -.-> PullSecrets["setup-credentials.sh<br/>(only if image is private)"]:::k8s
+    PullSecrets --> Deploy["operator-sdk run bundle<br/>--install-mode SingleNamespace=kserve<br/>(or deploy-bundle.sh — only with<br/>--customer-registry)"]:::k8s
     Direct --> Deploy
   end
 
-  subgraph Target Cluster Deploy
+  subgraph "Target Cluster Deploy"
     Deploy --> K8sOp[KServe Operator Pod Running]:::k8s
   end
 ```
@@ -106,7 +106,7 @@ stateDiagram-v2
         CreateCR --> WatchTrigger
     }
     
-    AutoInitPhase --> ReconciliationLoop : Triggers Watch Event:::trigger
+    AutoInitPhase --> ReconciliationLoop : Triggers Watch Event
     
     state ReconciliationLoop {
         step1: 1. Validate cert-manager (pre-flight CRD check)
@@ -183,11 +183,58 @@ flowchart LR
     classDef process fill:#e1f5fe,stroke:#0288d1,stroke-width:2px,color:#000
     classDef active fill:#e8f5e9,stroke:#388e3c,stroke-width:2px,color:#000
 
-    GH[GitHub KServe Release]:::file -- Downloaded via script --> Extractor[Kustomize Build]:::process
-    Extractor -- Removes Istio/Knative --> Raw[Raw YAMLs]:::file
-    Raw -- Patched for RawDeployment --> PatchedRaw[Functional Raw Manifests]:::file
-    
-    PatchedRaw -- Injected as String Literals --> GoCode[Operator bindata (Go)]:::process
-    GoCode -- Compiled --> Bin[Operator Binary]:::file
+    GH[Upstream KServe<br/>kserve-master/]:::file -- generate-kserve-raw.sh --> Extractor[Kustomize Build<br/>+ Python ConfigMap patch]:::process
+    Extractor -- "Removes Istio/Knative ingress<br/>(disableIstioVirtualHost: true,<br/>disableIngressCreation: true)" --> Raw[Raw YAMLs]:::file
+    Raw -- "Sets defaultDeploymentMode:<br/>RawDeployment" --> PatchedRaw[Functional Raw Manifests<br/>02-kserve-crds, 03-rbac,<br/>04-core, 05-runtimes]:::file
+
+    PatchedRaw -- "Copied to assets/ + embedded<br/>via go:embed (apply.go.tmpl)" --> GoCode[Operator Binary<br/>with embedded manifests]:::process
+    GoCode -- "Apply-time YAML rewrite:<br/>kserve namespace refs → req.Namespace" --> Bin[Runtime Application]:::file
     Bin -- Containerized --> Img[Operator Linux Docker Image]:::active
 ```
+
+---
+
+## End-to-End Test Validation
+
+Verified on a fresh Docker Desktop Kubernetes cluster, covering both the default-namespace path and a custom-namespace install (Design C). Full per-test details and bug findings live in [extra-docs/test-report-customer-registry.md](extra-docs/test-report-customer-registry.md).
+
+### Default `kserve` namespace
+
+| Step | Command | Result |
+|------|---------|--------|
+| Pre-flight | (cert-manager + OLM installed once per cluster) | ✅ |
+| Extract manifests | `./generate-kserve-raw.sh -t p-kserve-raw` | ✅ 4 manifest dirs (02–05) + 06-sample-model |
+| Generate operator | `./generate-kserve-operator.sh ... -b -p -o` | ✅ Operator project + OLM bundle built and pushed |
+| Create namespaces | `kubectl create namespace kserve` + `kserve-operator-system` | ✅ |
+| Deploy bundle | `operator-sdk run bundle <bundle-image> --namespace kserve-operator-system --install-mode SingleNamespace=kserve` | ✅ CSV `Succeeded`; OperatorGroup auto-created |
+| Watch KServe install | `kubectl get kserverawmode -A -w` | ✅ CR auto-created in `kserve`; phase `Ready` in ~44s |
+| Test inference | `curl .../sklearn-iris:predict` | ✅ `{"predictions":[1]}` |
+
+### Custom `my-kserve` namespace
+
+| Step | Command | Result |
+|------|---------|--------|
+| Create namespaces | `kubectl create namespace my-kserve` + `kserve-operator-system` | ✅ |
+| Deploy bundle | `operator-sdk run bundle <bundle-image> --namespace kserve-operator-system --install-mode SingleNamespace=my-kserve` | ✅ |
+| CR auto-created in `my-kserve`; KServe runtime installed in `my-kserve` (apply-time YAML rewrite) | `kubectl get kserverawmode -A` | ✅ Ready in ~40s |
+| All baked `kserve` refs rewritten | RoleBinding subjects, WebhookConfiguration `service.namespace`, Certificate `dnsNames`, `cert-manager.io/inject-ca-from` annotation | ✅ all → `my-kserve` |
+| Test inference | `curl .../sklearn-iris:predict` | ✅ `{"predictions":[1]}` |
+
+### Customer-registry path (air-gapped)
+
+| Step | Command |
+|------|---------|
+| Generate with customer registry | `./generate-kserve-operator.sh ... --customer-registry docker.io/<customer> -b -p -o` |
+| Archive images on builder | `bash mirror-images.sh --archive` → `images/operator.tar` + `images/bundle.tar` |
+| Transfer to customer site | (USB / secure gateway) |
+| Load images on customer side | `bash mirror-images.sh --load --user <u> --pass <t>` |
+| Set up pull secrets | `bash setup-credentials.sh --user <u> --pass <t>` |
+| Deploy | `bash deploy-bundle.sh dockerhub-creds` (or `KSERVE_NS=my-kserve bash deploy-bundle.sh dockerhub-creds`) |
+
+### Cleanup
+
+| Step | Command |
+|------|---------|
+| Tear down operator | `operator-sdk cleanup p-kserve-operator -n kserve-operator-system` |
+| Remove namespaces | `kubectl delete ns my-kserve kserve-operator-system` |
+| Clean generated dirs | `./generate-kserve-operator.sh -c p-kserve-operator` |
