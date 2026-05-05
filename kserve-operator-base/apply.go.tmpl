@@ -20,9 +20,20 @@ import (
 //go:embed assets/*
 var manifests embed.FS
 
-// applyManifests reads a YAML file from the embedded assets and applies all resources found in it
-// using Server-Side Apply.
-func applyManifests(ctx context.Context, c client.Client, path string) error {
+// bakedKServeNamespace is the namespace value baked into the embedded
+// KServe manifests by kustomize at extract time. The runtime rewrite
+// below replaces every occurrence of this with the user's chosen
+// targetNS so the install respects the OperatorGroup's target namespace.
+const bakedKServeNamespace = "kserve"
+
+// applyManifests reads a YAML file from the embedded assets, rewrites
+// every "kserve" namespace reference to targetNS, and applies all
+// resources found in it using Server-Side Apply.
+//
+// targetNS is the namespace where the user wants KServe installed
+// (typically the namespace of the KServeRawMode CR being reconciled).
+// When targetNS == "kserve", the rewrite is a no-op.
+func applyManifests(ctx context.Context, c client.Client, path string, targetNS string) error {
 	logger := log.FromContext(ctx)
 
 	data, err := manifests.ReadFile(path)
@@ -49,29 +60,167 @@ func applyManifests(ctx context.Context, c client.Client, path string) error {
 			return fmt.Errorf("failed to unmarshal JSON: %w", err)
 		}
 
-		// Inject the requested target namespace for objects that missed it during kustomization build
-		if obj.GetNamespace() == "" {
-			kind := obj.GetKind()
-			isClusterScoped := kind == "Namespace" ||
-				kind == "CustomResourceDefinition" ||
-				kind == "APIService" ||
-				strings.HasPrefix(kind, "Cluster") ||
-				strings.HasSuffix(kind, "WebhookConfiguration")
+		kind := obj.GetKind()
+		isClusterScoped := kind == "Namespace" ||
+			kind == "CustomResourceDefinition" ||
+			kind == "APIService" ||
+			strings.HasPrefix(kind, "Cluster") ||
+			strings.HasSuffix(kind, "WebhookConfiguration")
 
-			if !isClusterScoped {
-				// Default namespace-scoped components missing declarations to 'kserve'
-				obj.SetNamespace("kserve")
+		// Rewrite obj.metadata.namespace for namespaced kinds when it is
+		// either empty (kustomize sometimes drops it) or matches the baked
+		// "kserve" placeholder.
+		if !isClusterScoped {
+			ns := obj.GetNamespace()
+			if ns == "" || ns == bakedKServeNamespace {
+				obj.SetNamespace(targetNS)
 			}
 		}
 
+		// Cluster-scoped resources may still embed namespace references
+		// inside their spec — rewrite those too.
+		if err := rewriteEmbeddedNamespaceRefs(obj, targetNS); err != nil {
+			return fmt.Errorf("failed to rewrite namespace refs in %s/%s: %w", kind, obj.GetName(), err)
+		}
+
 		// Apply via Server-Side Apply
-		logger.Info("Applying resource", "Kind", obj.GetKind(), "Name", obj.GetName())
+		logger.Info("Applying resource", "Kind", kind, "Name", obj.GetName(), "Namespace", obj.GetNamespace())
 		err = c.Patch(ctx, obj, client.Apply, client.ForceOwnership, client.FieldOwner("kserve-raw-operator"))
 		if err != nil {
-			return fmt.Errorf("failed to apply resource %s %s: %w", obj.GetKind(), obj.GetName(), err)
+			return fmt.Errorf("failed to apply resource %s %s: %w", kind, obj.GetName(), err)
 		}
 	}
 	return nil
+}
+
+// rewriteEmbeddedNamespaceRefs replaces every "kserve" namespace reference
+// inside the structured spec/metadata of resources that point at the namespace
+// by name:
+//
+//   - cert-manager.io/inject-ca-from annotation (any kind): "<ns>/<cert>"
+//   - ClusterRoleBinding/RoleBinding subjects[].namespace
+//   - MutatingWebhookConfiguration/ValidatingWebhookConfiguration
+//     webhooks[].clientConfig.service.namespace
+//   - Certificate (cert-manager.io/v1) spec.commonName and spec.dnsNames[]
+//     (DNS pattern <svc>.<ns>.svc[.cluster.local])
+//
+// String-level replacement would risk touching identifiers like
+// "kserve-controller-manager" or image refs like "kserve/agent:latest";
+// this structured walk only looks at fields that semantically hold a
+// namespace name.
+func rewriteEmbeddedNamespaceRefs(obj *unstructured.Unstructured, targetNS string) error {
+	if targetNS == bakedKServeNamespace {
+		return nil
+	}
+
+	// Annotation rewrite is kind-agnostic — applies to CRDs, WebhookConfigurations,
+	// Services, etc. The format is "<namespace>/<certificate-name>".
+	if annos := obj.GetAnnotations(); annos != nil {
+		if v, ok := annos["cert-manager.io/inject-ca-from"]; ok {
+			parts := strings.SplitN(v, "/", 2)
+			if len(parts) == 2 && parts[0] == bakedKServeNamespace {
+				annos["cert-manager.io/inject-ca-from"] = targetNS + "/" + parts[1]
+				obj.SetAnnotations(annos)
+			}
+		}
+	}
+
+	switch obj.GetKind() {
+	case "ClusterRoleBinding", "RoleBinding":
+		subjects, found, err := unstructured.NestedSlice(obj.Object, "subjects")
+		if err != nil || !found {
+			return err
+		}
+		changed := false
+		for i, raw := range subjects {
+			subj, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if ns, _ := subj["namespace"].(string); ns == bakedKServeNamespace {
+				subj["namespace"] = targetNS
+				subjects[i] = subj
+				changed = true
+			}
+		}
+		if changed {
+			return unstructured.SetNestedSlice(obj.Object, subjects, "subjects")
+		}
+
+	case "MutatingWebhookConfiguration", "ValidatingWebhookConfiguration":
+		webhooks, found, err := unstructured.NestedSlice(obj.Object, "webhooks")
+		if err != nil || !found {
+			return err
+		}
+		changed := false
+		for i, raw := range webhooks {
+			wh, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			cc, ok := wh["clientConfig"].(map[string]interface{})
+			if !ok {
+				continue
+			}
+			svc, ok := cc["service"].(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if ns, _ := svc["namespace"].(string); ns == bakedKServeNamespace {
+				svc["namespace"] = targetNS
+				cc["service"] = svc
+				wh["clientConfig"] = cc
+				webhooks[i] = wh
+				changed = true
+			}
+		}
+		if changed {
+			return unstructured.SetNestedSlice(obj.Object, webhooks, "webhooks")
+		}
+
+	case "Certificate":
+		// cert-manager Certificate. Rewrite .kserve. → .<targetNS>. inside
+		// DNS names (anchored on the standard <svc>.<ns>.svc pattern).
+		if cn, found, _ := unstructured.NestedString(obj.Object, "spec", "commonName"); found {
+			if newCN := rewriteSvcDNSNamespace(cn, targetNS); newCN != cn {
+				if err := unstructured.SetNestedField(obj.Object, newCN, "spec", "commonName"); err != nil {
+					return err
+				}
+			}
+		}
+		if dnsNames, found, _ := unstructured.NestedStringSlice(obj.Object, "spec", "dnsNames"); found {
+			changed := false
+			for i, n := range dnsNames {
+				if newN := rewriteSvcDNSNamespace(n, targetNS); newN != n {
+					dnsNames[i] = newN
+					changed = true
+				}
+			}
+			if changed {
+				if err := unstructured.SetNestedStringSlice(obj.Object, dnsNames, "spec", "dnsNames"); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// rewriteSvcDNSNamespace recognizes the Kubernetes service DNS pattern
+// <svc>.<ns>.svc[.cluster.local] and replaces the namespace component
+// when it matches the baked "kserve" placeholder. Strings that are not
+// service DNS names (e.g. arbitrary text or image refs) are returned
+// unchanged.
+func rewriteSvcDNSNamespace(dns, targetNS string) string {
+	parts := strings.Split(dns, ".")
+	if len(parts) < 3 {
+		return dns
+	}
+	if parts[1] != bakedKServeNamespace || parts[2] != "svc" {
+		return dns
+	}
+	parts[1] = targetNS
+	return strings.Join(parts, ".")
 }
 
 // waitForNamespacePodsReady polls until all pods in the given namespace are Ready,

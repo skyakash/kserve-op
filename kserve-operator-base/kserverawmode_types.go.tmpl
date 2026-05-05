@@ -20,14 +20,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// KServeRawModeSpec defines the desired state of KServeRawMode
+// KServeRawModeSpec defines the desired state of KServeRawMode.
+//
+// The CR's own metadata.namespace is the install target — KServe components
+// are installed into the same namespace where this CR lives. The namespace
+// must exist before the operator reconciles the CR (the OperatorGroup's
+// targetNamespaces is the source of truth).
 type KServeRawModeSpec struct {
-	// KServeNamespace is the pre-existing namespace into which KServe
-	// components will be installed. The namespace must be created by
-	// the user before applying this CR. Defaults to "kserve".
-	// +kubebuilder:default="kserve"
-	// +optional
-	KServeNamespace string `json:"kserveNamespace,omitempty"`
 }
 
 // KServeRawModeStatus defines the observed state of KServeRawMode
@@ -42,7 +41,6 @@ type KServeRawModeStatus struct {
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
 //+kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-//+kubebuilder:printcolumn:name="KServe NS",type=string,JSONPath=`.spec.kserveNamespace`
 //+kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // KServeRawMode is the Schema for the kserverawmodes API

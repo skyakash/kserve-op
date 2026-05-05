@@ -86,18 +86,17 @@ mkdir -p "${OUTPUT_DIR}"
 # Jump into KServe source to run localized Kustomize builds
 pushd "${KSERVE_SOURCE}" > /dev/null
 
-echo "[1/5] Extracting Cert-Manager..."
-mkdir -p "${OUTPUT_DIR}/01-cert-manager"
-curl -sLk "https://github.com/cert-manager/cert-manager/releases/download/v1.13.0/cert-manager.yaml" > "${OUTPUT_DIR}/01-cert-manager/cert-manager.yaml"
-echo "      Done."
+# Cert-manager is a cluster prerequisite (not bundled).
+# Directory numbering intentionally starts at 02 — slot 01 is reserved
+# for cert-manager, which the user installs themselves.
 
-echo "[2/5] Extracting KServe CRDs..."
+echo "[1/4] Extracting KServe CRDs..."
 mkdir -p "${OUTPUT_DIR}/02-kserve-crds"
 ${KUSTOMIZE} build config/crd > "${OUTPUT_DIR}/02-kserve-crds/kserve-crds.yaml"
 ${KUSTOMIZE} build config/crd/full/llmisvc >> "${OUTPUT_DIR}/02-kserve-crds/kserve-crds.yaml" 2>/dev/null || true
 echo "      Done."
 
-echo "[3/5] Extracting KServe RBAC..."
+echo "[2/4] Extracting KServe RBAC..."
 mkdir -p "${OUTPUT_DIR}/03-kserve-rbac"
 
 # KServe RBAC requires the 'kserve' namespace explicitly set in ClusterRoleBinding subjects
@@ -125,7 +124,7 @@ with open(sys.argv[2], "w") as f:
 rm "${OUTPUT_DIR}/03-kserve-rbac/kserve-rbac-temp.yaml"
 echo "      Done."
 
-echo "[4/5] Extracting KServe Core & Patching for Raw Mode..."
+echo "[3/4] Extracting KServe Core & Patching for Raw Mode..."
 mkdir -p "${OUTPUT_DIR}/04-kserve-core"
 
 # To get the core manifests, we build the default Kustomize overlay
@@ -176,7 +175,7 @@ with open(sys.argv[2], "w") as f:
 rm "${OUTPUT_DIR}/04-kserve-core/kserve-core-temp.yaml"
 echo "      Done."
 
-echo "[5/5] Extracting KServe ClusterServingRuntimes..."
+echo "[4/4] Extracting KServe ClusterServingRuntimes..."
 mkdir -p "${OUTPUT_DIR}/05-kserve-runtimes"
 ${KUSTOMIZE} build config/runtimes > "${OUTPUT_DIR}/05-kserve-runtimes/kserve-cluster-resources.yaml"
 echo "      Done."

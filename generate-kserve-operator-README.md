@@ -95,7 +95,7 @@ chmod +x generate-kserve-operator.sh
 - `-p, --push`           : Automatically push the Docker image without prompting
 - `-x, --multi-platform` : Automatically compiles and pushes a multi-architecture image (amd64, arm64, s390x, ppc64le) using `docker-buildx`. *(Implies `-b`)*
 - `-o, --olm`            : Automatically generates and builds an Operator Lifecycle Manager (OLM) Bundle image for the registry. *(Implies `-b`)*
-- `--install-mode <mode>`: OLM install mode for the operator CSV. Valid values: `OwnNamespace` (default), `AllNamespaces`, `SingleNamespace`, `MultiNamespace`. Controls which namespaces the operator watches. `OwnNamespace` is the most restrictive and recommended for isolated deployments.
+- `--install-mode <mode>`: OLM install mode for the operator CSV. Valid values: `SingleNamespace` (default — operator manages one specific namespace), `OwnNamespace`, `AllNamespaces`, `MultiNamespace`. `SingleNamespace` is recommended for isolated deployments.
 - `--customer-registry <prefix>`: Customer private registry prefix (e.g., `artifactory.example.com/myrepo`). When set, all image references in the generated `operator-deployment.yaml` are rewritten to point to this registry. Also generates `mirror-images.sh` (for copying images via skopeo) and `deploy-bundle.sh` (interactive OLM/direct install helper) in the package directory.
 - `--pull-secret <name>` : Name of an existing `imagePullSecret` on the cluster (injected into the operator pod spec)
 - `--docker-server <url>` : Registry server URL for pull secret creation (default: `docker.io`)
@@ -114,9 +114,9 @@ The following command was used to generate a fully multi-platform, OLM-ready ope
   -m github.com/akashdeo/p-kserve-operator \
   -d akashdeo.com \
   -s p-kserve-raw \
-  -i docker.io/akashneha/kserve-raw-operator:v300 \
+  -i docker.io/akashneha/kserve-raw-operator:v303 \
   --pull-secret dockerhub-creds \
-  --install-mode OwnNamespace \
+  --install-mode SingleNamespace \
   -b -p -o
 ```
 
@@ -143,14 +143,15 @@ If you omit any of the required CLI flags, the script will gracefully fall back 
 Once the parameters are provided, the script executes the following sequence autonomously:
 
 1. **Scaffolding**: Runs `operator-sdk init` and `operator-sdk create api` to scaffold a modern `kubebuilder` project.
-2. **Asset Embedding**: Copies the 5 core KServe manifest directories (`cert-manager`, `crds`, `rbac`, `core`, `runtimes`) from your source folder directly into the Go project's `internal/controller/assets/` directory.
+2. **Asset Embedding**: Copies the **4** core KServe manifest directories (`crds`, `rbac`, `core`, `runtimes`) from your source folder directly into the Go project's `internal/controller/assets/` directory.
+   > **Note:** `cert-manager` is intentionally excluded — it is a **cluster pre-requisite** that must be installed before the operator is deployed. The operator validates cert-manager's presence at reconcile time and surfaces a `CertManagerNotFound` error phase if absent.
 3. **Code Templating**: Dynamically copies the `.tmpl` files from the `kserve-operator-base/` directory and injects your CLI variables via `sed`, creating three crucial Go files:
     - `api/.../kserverawmode_types.go`: Defines the Custom Resource schema (`KServeRawMode`).
     - `internal/controller/apply.go`: Implements a Kubernetes **Server-Side Apply** engine to parse and apply the embedded YAML files, bypassing standard annotation size limits.
-    - `internal/controller/kserverawmode_controller.go`: Writes the main reconciliation loop. This loop explicitly maps the execution order, applies the `.yaml` assets, ensures the `kserve` namespace exists for RBAC bindings, and **polls for real pod readiness** (5-second retries, 5-minute timeout) before deploying `ServingRuntimes` to prevent Webhook race conditions. The reconciler is **idempotent** — it re-applies manifests on every spec change, using `ObservedGeneration` to avoid unnecessary reconciles.
+    - `internal/controller/kserverawmode_controller.go`: Writes the main reconciliation loop. This loop explicitly maps the execution order, derives the install namespace from the CR's `metadata.namespace` (which the OperatorGroup's `targetNamespaces` constrains), applies the `.yaml` assets with apply-time namespace rewriting (every baked `kserve` reference becomes the chosen target), and **polls for real pod readiness** (5-second retries, 5-minute timeout) before deploying `ServingRuntimes` to prevent Webhook race conditions. The reconciler is **idempotent** — it re-applies manifests on every spec change, using `ObservedGeneration` to avoid unnecessary reconciles.
 4. **Compilation**: Automatically runs `make manifests`, `make generate`, and `go mod tidy` to ensure the DeepCopy objects, RBAC roles, and go modules are perfectly aligned.
-5. **Containerization**: If requested via the `-b / --build` flag, executes `make docker-build IMG=<image-tag>`.
-    - Note: If the `--multi-platform` flag is passed, this step shifts to `make docker-buildx`, which triggers a multi-architecture compile and auto-push.
+5. **Containerization**: If requested via the `-b / --build` flag, executes `docker build` to build the operator image.
+   - Note: If the `--multi-platform` flag is passed, the script calls `docker buildx build --push` directly (bypassing `make docker-buildx`) to ensure build failures are always detected. A post-push `docker manifest inspect` verification confirms the image is available in the registry.
 6. **Registry Push**: If requested via the `-p / --push` flag, executes `make docker-push IMG=<image-tag>` to push your newly built container directly to your remote registry.
 7. **Deployment Package**: Automatically runs `kustomize build` to generate a self-contained `<target>-package/` directory with `operator-deployment.yaml` and `kserve-rawmode.yaml` ready for immediate deployment.
 
@@ -198,18 +199,42 @@ If you generated an OLM bundle using the `-o` flag, you can install the operator
 > **OLM Platform Compatibility**: The script uses `docker buildx build --provenance=false --sbom=false` when building the bundle image. This produces a flat single-manifest image (auto-detecting your host arch via `uname -m`). Without these flags, Docker BuildKit adds attestation manifests that create a multi-arch manifest list which OLM's image unpacker cannot resolve. This works correctly on both `linux/amd64` (x86_64) and `linux/arm64` (aarch64) hosts.
 
 ```bash
-# 1. Set up pull credentials (skip if images are public)
-bash setup-credentials.sh --user <registry-user> --pass <registry-token>
-# Or interactively: bash setup-credentials.sh
+# 0. Install cert-manager (REQUIRED — the operator does not install it)
+CERT_MANAGER_VERSION="v1.17.2"
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml
+kubectl wait --for=condition=Ready pods --all -n cert-manager --timeout=180s
 
-# 2. Deploy the bundle (installs the Operator via OLM)
-operator-sdk run bundle docker.io/akashneha/kserve-raw-operator:v300-bundle \
-  --pull-secret-name dockerhub-creds
+# 1. Install OLM (once per cluster)
+operator-sdk olm install
+kubectl get pods -n olm   # wait until all pods are Running
 
-# 3. Watch KServe auto-installation progress
-# (The operator auto-creates the KServeRawMode CR — no manual apply needed)
+# 2. Create the two namespaces.
+#    KSERVE_NS = where the CR + KServe runtime will live (default 'kserve';
+#                pick anything else, e.g. 'my-kserve', and apply-time YAML rewriting
+#                will install KServe there).
+KSERVE_NS=kserve
+kubectl create namespace "${KSERVE_NS}"
+kubectl create namespace kserve-operator-system
+
+# 3. (Optional) Pull secret in the operator namespace, only if your image is private.
+kubectl create secret docker-registry dockerhub-creds \
+  --docker-server=docker.io \
+  --docker-username=<registry-user> \
+  --docker-password=<registry-token> \
+  -n kserve-operator-system
+
+# 4. Deploy the bundle. --install-mode auto-creates an OperatorGroup
+#    targeting ${KSERVE_NS}; no manual OperatorGroup yaml needed.
+operator-sdk run bundle <your-bundle-image>:<tag>-bundle \
+  --namespace kserve-operator-system \
+  --install-mode "SingleNamespace=${KSERVE_NS}"
+# (add `--pull-secret-name dockerhub-creds` if step 3 was needed)
+
+# 5. Watch KServe auto-installation progress (the CR is auto-created in ${KSERVE_NS})
 kubectl get kserverawmode -A -w
 ```
+
+> **Why no OperatorGroup yaml?** OLM forbids embedding OperatorGroups in bundles (they're user-controlled installation parameters). `operator-sdk run bundle --install-mode` generates one on the fly named `operator-sdk-og` in the operator namespace.
 
 *Note: If you provided a `--pull-secret` during generation, the generated OLM CSV will automatically include it, ensuring the bundle can be unpacked on clusters with pull restrictions.*
 
@@ -225,36 +250,45 @@ If deploying to a customer environment with a private registry (e.g., Artifactor
   -m github.com/akashdeo/p-kserve-operator \
   -d akashdeo.com \
   -s p-kserve-raw \
-  -i docker.io/akashneha/kserve-raw-operator:v300 \
+  -i docker.io/akashneha/kserve-raw-operator:<tag> \
   --customer-registry localhost:5001/myrepo \
   --pull-secret dockerhub-creds \
-  --install-mode OwnNamespace \
+  --install-mode SingleNamespace \
   -b -p -o
 ```
 
-This generates three additional files in `p-kserve-operator-package/`:
+The generated `p-kserve-operator-package/` directory contains up to four helper scripts:
 
-| File | Purpose |
-|---|---|
-| `mirror-images.sh` | Copies operator + bundle images from source registry → customer registry. Supports 3 modes: **online** (direct), **archive** (save to tar), **load** (push from tar). |
-| `deploy-bundle.sh` | Interactive installer: prompts whether to use OLM bundle or direct `kubectl apply`. |
-| `setup-credentials.sh` | Creates pull secrets. Accepts `--user`/`--pass` CLI args or prompts interactively. |
+| File | When generated | Purpose |
+|---|---|---|
+| `setup-credentials.sh` | Always | Creates `dockerhub-creds` pull secret in `default`, `kserve-operator-system`, `olm`, `operators`. Pre-flight checks cert-manager + namespaces and fails fast if anything is missing. Accepts `--user`/`--pass` CLI args or prompts interactively. |
+| `enable-ingress.sh` | Always | Patches KServe's `inferenceservice-config` ConfigMap to enable Ingress creation, restarts the controller, waits for Ready. Use this only when you want external URLs via an ingress controller. Accepts `KSERVE_NS` env var (default `kserve`) and `--class` flag (default `nginx`). |
+| `mirror-images.sh` | With `--customer-registry` | Copies operator + bundle images from build registry → customer registry. Supports 3 modes: **online** (direct), **archive** (save to tar), **load** (push from tar). |
+| `deploy-bundle.sh` | With `--customer-registry` | One-command OLM install — wraps `operator-sdk run bundle ... --install-mode SingleNamespace=${KSERVE_NS:-kserve} --pull-secret-name <secret>`. Interactive: prompts for OLM bundle vs. direct `kubectl apply` path. |
+
+> **Cluster prerequisites for both deployer workflows:**
+> 1. cert-manager installed (`kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.17.2/cert-manager.yaml`)
+> 2. OLM installed (`operator-sdk olm install`)
+> 3. Both namespaces pre-created on the cluster:
+>    ```bash
+>    kubectl create namespace kserve                  # KServe target ns (override with KSERVE_NS)
+>    kubectl create namespace kserve-operator-system  # operator pod home
+>    ```
 
 **Deployer workflow — Option A (online, both registries on one machine):**
 ```bash
 cd p-kserve-operator-package
 
 # 1. Mirror images to customer registry
-bash mirror-images.sh --dest-user <customer-user> --dest-pass <customer-token>
+bash mirror-images.sh --user <customer-user> --pass <customer-token>
 
-# 2. Install OLM (once per cluster)
-operator-sdk olm install
-
-# 3. Set up pull credentials
+# 2. Set up pull credentials
 bash setup-credentials.sh --user <customer-user> --pass <customer-token>
 
-# 4. Deploy
+# 3. Deploy
 bash deploy-bundle.sh dockerhub-creds
+# To install KServe into a custom namespace name:
+#   KSERVE_NS=my-kserve bash deploy-bundle.sh dockerhub-creds
 ```
 
 **Deployer workflow — Option B (offline/air-gapped, images shipped as archives):**
@@ -267,10 +301,11 @@ bash mirror-images.sh --archive
 
 # --- On the customer (air-gapped) machine ---
 cd p-kserve-operator-package
-bash mirror-images.sh --load --dest-user <customer-user> --dest-pass <customer-token>
-operator-sdk olm install
+bash mirror-images.sh --load --user <customer-user> --pass <customer-token>
 bash setup-credentials.sh --user <customer-user> --pass <customer-token>
 bash deploy-bundle.sh dockerhub-creds
+# (cert-manager and OLM must already be installed on the air-gapped cluster
+#  — typically pre-staged by the cluster admin before the package arrives)
 ```
 
 > **Note:** `mirror-images.sh` prompts interactively for credentials if `--dest-user`/`--dest-pass` are not provided. No credentials are embedded in the generated scripts.
@@ -283,16 +318,18 @@ Once you submit the `KServeRawMode` CR, the operator progresses through granular
 kubectl get kserverawmode -A -w
 ```
 
-Expected output:
+Expected output (using default `kserve` namespace; the column tracks the OperatorGroup's `targetNamespaces`):
 ```
-NAMESPACE   NAME                   PHASE                   AGE
-default     kserve-rawmode   InstallingCertManager   5s
-default     kserve-rawmode   InstallingCRDs          25s
-default     kserve-rawmode   InstallingRBAC          27s
-default     kserve-rawmode   InstallingCore          28s
-default     kserve-rawmode   InstallingRuntimes      55s
-default     kserve-rawmode   Ready                   60s
+NAMESPACE   NAME             PHASE                    AGE
+kserve      kserve-rawmode   ValidatingCertManager    2s
+kserve      kserve-rawmode   InstallingCRDs           8s
+kserve      kserve-rawmode   InstallingRBAC           10s
+kserve      kserve-rawmode   InstallingCore           11s
+kserve      kserve-rawmode   InstallingRuntimes       38s
+kserve      kserve-rawmode   Ready                    43s
 ```
+
+If cert-manager is absent, the phase shows `CertManagerNotFound` and the operator logs display an actionable error. Install cert-manager and the operator retries automatically.
 
 The operator polls for real pod readiness at each stage — no manual `sleep` commands needed.
 

@@ -173,6 +173,63 @@ cd "${OUTPUT_DIR}"
 ${OPERATOR_SDK} init --domain="${API_DOMAIN}" --repo="${GO_MODULE}"
 ${OPERATOR_SDK} create api --group="operator" --version="v1alpha1" --kind="KServeRawMode" --resource=true --controller=true
 
+# Hardcode the operator's runtime namespace to 'kserve-operator-system' regardless
+# of -t / TARGET_DIR_NAME. Predictable, well-known location for the operator pod;
+# decoupled from the Go project directory name.
+KUSTOMIZATION_FILE="config/default/kustomization.yaml"
+if [ -f "${KUSTOMIZATION_FILE}" ]; then
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' "s|^namespace: .*$|namespace: kserve-operator-system|" "${KUSTOMIZATION_FILE}"
+    else
+        sed -i "s|^namespace: .*$|namespace: kserve-operator-system|" "${KUSTOMIZATION_FILE}"
+    fi
+    echo "Kustomize namespace pinned to: kserve-operator-system"
+else
+    echo "WARNING: ${KUSTOMIZATION_FILE} not found — kustomize namespace will use operator-sdk default."
+fi
+
+# Inject WATCH_NAMESPACE env var into the manager container via downward API.
+# OLM annotates the Pod with 'olm.targetNamespaces' based on the OperatorGroup's
+# targetNamespaces; reading it lets the controller's auto-init create the default
+# CR in the right namespace. Without this, auto-init falls back to "kserve" and
+# fails when the user picks a different namespace name (e.g. my-kserve).
+MANAGER_FILE="config/manager/manager.yaml"
+if [ -f "${MANAGER_FILE}" ]; then
+    python3 - <<'PY'
+import yaml, sys
+path = "config/manager/manager.yaml"
+with open(path) as f:
+    docs = list(yaml.safe_load_all(f))
+patched = False
+env_var = {
+    "name": "WATCH_NAMESPACE",
+    "valueFrom": {
+        "fieldRef": {
+            "fieldPath": "metadata.annotations['olm.targetNamespaces']"
+        }
+    },
+}
+for doc in docs:
+    if not doc or doc.get("kind") != "Deployment":
+        continue
+    for c in doc["spec"]["template"]["spec"]["containers"]:
+        if c.get("name") != "manager":
+            continue
+        existing = c.get("env") or []
+        existing = [e for e in existing if e.get("name") != "WATCH_NAMESPACE"]
+        existing.append(env_var)
+        c["env"] = existing
+        patched = True
+if not patched:
+    sys.exit("ERROR: did not find a manager container in manager.yaml to patch")
+with open(path, "w") as f:
+    yaml.safe_dump_all(docs, f, default_flow_style=False, sort_keys=False)
+print("Injected WATCH_NAMESPACE env var (downward API) into manager container.")
+PY
+else
+    echo "WARNING: ${MANAGER_FILE} not found — WATCH_NAMESPACE will not be injected."
+fi
+
 # Patch installModes in the base CSV so it is preserved as source-of-truth.
 # NOTE: make bundle regenerates installModes from operator-sdk defaults (AllNamespaces=true),
 # so we ALSO patch the bundle CSV after make bundle runs (see below). yq is used for
@@ -222,8 +279,11 @@ echo "[2/4] Copying KServe Extracted Manifests into Controller Assets..."
 ASSETS_DIR="${OUTPUT_DIR}/internal/controller/assets"
 mkdir -p "${ASSETS_DIR}"
 
-# Copy all the numbered manifest directories, skipping the sample model and installer
-cp -r "${SCRIPT_DIR}/${MANIFEST_DIR}/01-cert-manager" "${ASSETS_DIR}/"
+# Copy all the numbered manifest directories.
+# NOTE: 01-cert-manager is intentionally excluded — cert-manager is now a
+# cluster pre-requisite that must be installed before deploying the operator.
+# The operator validates its presence at reconcile time and fails with a
+# clear error if it is absent.
 cp -r "${SCRIPT_DIR}/${MANIFEST_DIR}/02-kserve-crds" "${ASSETS_DIR}/"
 cp -r "${SCRIPT_DIR}/${MANIFEST_DIR}/03-kserve-rbac" "${ASSETS_DIR}/"
 cp -r "${SCRIPT_DIR}/${MANIFEST_DIR}/04-kserve-core" "${ASSETS_DIR}/"
@@ -287,13 +347,32 @@ fi
 
 if [[ "$BUILD_CHOICE" =~ ^[Yy]$ ]]; then
     if [ "$MULTI_PLATFORM" = true ]; then
-        echo "Running 'make docker-buildx IMG=${IMAGE_TAG}'..."
+        echo "Running multi-platform operator image build for ${IMAGE_TAG}..."
         echo "NOTE: Multi-platform build automatically pushes to the registry."
-        if ! make docker-buildx IMG="${IMAGE_TAG}"; then
-            echo "ERROR: Multi-platform build failed."
+        # We call docker buildx directly instead of 'make docker-buildx' because the
+        # Makefile target uses '-' prefix on the build line, which silently swallows
+        # errors — the image would appear to build successfully even if push failed.
+        BUILDER_NAME="kserve-op-builder-$$"
+        docker buildx create --name "${BUILDER_NAME}" --use
+        if ! docker buildx build \
+            --push \
+            --platform linux/arm64,linux/amd64 \
+            --tag "${IMAGE_TAG}" \
+            -f Dockerfile .; then
+            docker buildx rm "${BUILDER_NAME}" 2>/dev/null || true
+            echo "ERROR: Multi-platform operator image build/push failed."
             exit 1
         fi
-        echo "The cross-platform image '${IMAGE_TAG}' has been successfully built and pushed!"
+        docker buildx rm "${BUILDER_NAME}" 2>/dev/null || true
+        echo "The cross-platform operator image '${IMAGE_TAG}' has been successfully built and pushed!"
+        # Verify it's actually on the registry
+        echo "Verifying push (docker manifest inspect)..."
+        if ! docker manifest inspect "${IMAGE_TAG}" > /dev/null 2>&1; then
+            echo "ERROR: Image ${IMAGE_TAG} not found on registry after push. Something went wrong."
+            exit 1
+        fi
+        echo "Verification passed: ${IMAGE_TAG} is available on the registry."
+
     else
         echo "Running 'make docker-build IMG=${IMAGE_TAG}'..."
         if ! make docker-build IMG="${IMAGE_TAG}"; then
@@ -606,49 +685,73 @@ MIRROR_EOF
 # deploy-bundle.sh — Install the KServe Raw Operator
 #
 # OPTION A — OLM bundle install (recommended when OLM is available)
-#   Uses 'operator-sdk run bundle' which automatically creates a temporary
-#   CatalogSource on the cluster. No opm, no FBC image, no CatalogSource
-#   YAML needed.
-#   Prerequisites: OLM installed (operator-sdk olm install)
-#   To uninstall: operator-sdk cleanup ${TARGET_DIR_NAME}
+#   Uses 'operator-sdk run bundle --install-mode SingleNamespace=<ns>' which
+#   automatically creates the OperatorGroup with the right targetNamespaces
+#   and a temporary CatalogSource on the cluster. No opm, no FBC image, no
+#   manual OperatorGroup yaml needed.
+#   Prerequisites:
+#     - OLM installed (operator-sdk olm install)
+#     - Namespace 'kserve-operator-system' created (operator pod home)
+#     - The KServe target namespace (default 'kserve') created
+#   To uninstall: operator-sdk cleanup ${TARGET_DIR_NAME} -n kserve-operator-system
 #
 # OPTION B — Direct manifest install (no OLM required)
 #   Standard kubectl apply. Simpler but bypasses OLM lifecycle management.
+#   Requires the same two namespaces above.
 #
-# Usage: bash deploy-bundle.sh [pull-secret-name]
+# Usage:
+#   bash deploy-bundle.sh [pull-secret-name]
+#
+# Environment variables:
+#   KSERVE_NS    KServe target namespace (default: 'kserve'). Override to
+#                install KServe into a custom-named namespace.
 # =============================================================================
+set -e
 
 BUNDLE_IMAGE="${CUSTOMER_BUNDLE}"
+OPERATOR_NS="kserve-operator-system"
+KSERVE_NS="\${KSERVE_NS:-kserve}"
 PULL_SECRET="\${1:-}"
 
 echo "================================================================="
 echo " KServe Raw Operator — Deployment"
+echo "================================================================="
+echo "  Bundle image     : \${BUNDLE_IMAGE}"
+echo "  Operator ns      : \${OPERATOR_NS}"
+echo "  KServe target ns : \${KSERVE_NS}"
 echo "================================================================="
 echo "  A) OLM bundle  : operator-sdk run bundle (recommended)"
 echo "  B) Direct YAML : kubectl apply -f operator-deployment.yaml"
 echo "================================================================="
 read -p "Enter choice [A/B]: " CHOICE
 
-case "$(echo "\${CHOICE}" | tr '[:lower:]' '[:upper:]')" in
+case "\$(echo "\${CHOICE}" | tr '[:lower:]' '[:upper:]')" in
   A)
     echo ""
     echo "Installing via OLM bundle: \${BUNDLE_IMAGE}"
+    echo "  --namespace=\${OPERATOR_NS}"
+    echo "  --install-mode=SingleNamespace=\${KSERVE_NS}"
     if [ -n "\${PULL_SECRET}" ]; then
-        operator-sdk run bundle "\${BUNDLE_IMAGE}" --pull-secret-name "\${PULL_SECRET}"
+        operator-sdk run bundle "\${BUNDLE_IMAGE}" \\
+            --namespace "\${OPERATOR_NS}" \\
+            --install-mode "SingleNamespace=\${KSERVE_NS}" \\
+            --pull-secret-name "\${PULL_SECRET}"
     else
-        operator-sdk run bundle "\${BUNDLE_IMAGE}"
+        operator-sdk run bundle "\${BUNDLE_IMAGE}" \\
+            --namespace "\${OPERATOR_NS}" \\
+            --install-mode "SingleNamespace=\${KSERVE_NS}"
     fi
     echo ""
-    echo "Operator installed via OLM."
-    echo "To uninstall: operator-sdk cleanup ${TARGET_DIR_NAME}"
+    echo "Operator installed via OLM into '\${OPERATOR_NS}'."
+    echo "To uninstall: operator-sdk cleanup ${TARGET_DIR_NAME} -n \${OPERATOR_NS}"
     ;;
   B)
     echo ""
     echo "Installing via direct manifest..."
     kubectl apply -f operator-deployment.yaml
     echo ""
-    echo "Operator deployed. Apply your CR when ready:"
-    echo "  kubectl apply -f kserve-rawmode.yaml"
+    echo "Operator deployed. The operator auto-creates the KServeRawMode CR"
+    echo "in '\${KSERVE_NS}'; no manual 'kubectl apply -f kserve-rawmode.yaml' needed."
     ;;
   *)
     echo "Invalid choice. Exiting."
@@ -704,10 +807,11 @@ cat > "${PACKAGE_DIR}/setup-credentials.sh" <<'CREDS_EOF'
 #     bash setup-credentials.sh
 #
 # Namespace lifecycle:
-#   default          — always exists
-#   *-system         — created by: kubectl apply -f operator-deployment.yaml
-#   olm, operators   — created by: operator-sdk olm install
-#   kserve           — created automatically by the operator reconcile loop
+#   default                   — always exists
+#   kserve-operator-system    — created by: kubectl apply -f operator-deployment.yaml (direct deploy) or operator-sdk run bundle (OLM)
+#   olm, operators            — created by: operator-sdk olm install
+#   cert-manager              — created by the user when installing cert-manager (cluster prerequisite, NOT installed by the operator)
+#   <KServe target namespace> — created by the user before deploying (default name: 'kserve', overridable by setting OperatorGroup.targetNamespaces)
 # =============================================================================
 set -e
 
@@ -735,6 +839,57 @@ if [[ -z "${DOCKER_PASSWORD}" ]]; then
     read -rsp "Registry password/token: " DOCKER_PASSWORD; echo
 fi
 
+# Pre-flight: validate required cluster prerequisites BEFORE creating any secrets.
+# Fails fast with a clear list of what's missing so the user can fix and re-run.
+echo "Pre-flight checks..."
+MISSING=()
+
+# 1. cert-manager is a hard prerequisite for the operator (validated at reconcile
+#    time too — we surface it here for a clearer earlier signal).
+if ! kubectl get crd certificates.cert-manager.io >/dev/null 2>&1; then
+    MISSING+=("cert-manager — CRD certificates.cert-manager.io not registered")
+fi
+
+# 2. Each namespace where this script will create a pull secret must already exist.
+#    kubectl create secret cannot create the namespace as a side effect, so
+#    missing namespaces would be silently skipped and cause confusing pull
+#    failures later.
+for ns in "${SYSTEM_NS}" olm operators; do
+    if ! kubectl get ns "${ns}" >/dev/null 2>&1; then
+        MISSING+=("namespace '${ns}' — required to create the pull secret in")
+    fi
+done
+
+if [ "${#MISSING[@]}" -gt 0 ]; then
+    echo ""
+    echo "❌ Prerequisites not met:"
+    for item in "${MISSING[@]}"; do
+        echo "   - ${item}"
+    done
+    echo ""
+    echo "Fix the missing items below, then re-run this script."
+    echo ""
+    echo "   # cert-manager (cluster prerequisite — pinned stable release):"
+    echo "   kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.17.2/cert-manager.yaml"
+    echo "   kubectl wait --for=condition=Ready pods --all -n cert-manager --timeout=180s"
+    echo ""
+    echo "   # OLM (creates olm + operators namespaces):"
+    echo "   operator-sdk olm install"
+    echo ""
+    echo "   # Operator pod's home namespace (always required):"
+    echo "   kubectl create namespace ${SYSTEM_NS}"
+    echo ""
+    echo "   # KServe target namespace (where the CR + KServe runtime will live):"
+    echo "   kubectl create namespace kserve   # or your custom name (e.g. my-kserve)"
+    exit 1
+fi
+
+echo "   ✅ cert-manager CRD registered"
+echo "   ✅ namespace '${SYSTEM_NS}' exists"
+echo "   ✅ namespace 'olm' exists"
+echo "   ✅ namespace 'operators' exists"
+echo ""
+
 create_secret() {
     local ns=$1
     echo "Creating pull secret '${SECRET_NAME}' in namespace '${ns}'..."
@@ -746,43 +901,122 @@ create_secret() {
         --dry-run=client -o yaml | kubectl apply -f -
 }
 
-# Always-available namespace
 create_secret default
-
-# Operator system namespace (only present for direct manifest deploy)
-if kubectl get ns "${SYSTEM_NS}" &>/dev/null; then
-    create_secret "${SYSTEM_NS}"
-else
-    echo "Namespace '${SYSTEM_NS}' not found — apply operator-deployment.yaml first to create it (direct deploy only)."
-fi
-
-# OLM namespaces — present after 'operator-sdk olm install'
-for ns in olm operators; do
-    if kubectl get ns "${ns}" &>/dev/null; then
-        create_secret "${ns}"
-    else
-        echo "Namespace '${ns}' not found — run 'operator-sdk olm install' first if using OLM bundle deploy."
-    fi
-done
+create_secret "${SYSTEM_NS}"
+create_secret olm
+create_secret operators
 
 echo ""
-echo "Pull secret '${SECRET_NAME}' configured."
-echo "Namespaces 'kserve' and 'cert-manager' are created automatically by the operator — no action needed."
+echo "✅ Pull secret '${SECRET_NAME}' created in: default, ${SYSTEM_NS}, olm, operators."
+echo ""
+echo "Next: deploy the operator (Step 4 in QUICK_START.md):"
+echo "   bash deploy-bundle.sh ${SECRET_NAME}      # interactive helper (only if --customer-registry was used)"
+echo "   # ─ or ─"
+echo "   operator-sdk run bundle <bundle-image> \\"
+echo "       --namespace ${SYSTEM_NS} \\"
+echo "       --install-mode SingleNamespace=<your-kserve-ns> \\"
+echo "       --pull-secret-name ${SECRET_NAME}"
 CREDS_EOF
 # Inject generator-time values (secret name, system namespace)
 if [[ "$OSTYPE" == "darwin"* ]]; then
     sed -i '' \
         -e "s|__SECRET_NAME__|${SECRET_NAME}|g" \
-        -e "s|__SYSTEM_NS__|${TARGET_DIR_NAME}-system|g" \
+        -e "s|__SYSTEM_NS__|kserve-operator-system|g" \
         "${PACKAGE_DIR}/setup-credentials.sh"
 else
     sed -i \
         -e "s|__SECRET_NAME__|${SECRET_NAME}|g" \
-        -e "s|__SYSTEM_NS__|${TARGET_DIR_NAME}-system|g" \
+        -e "s|__SYSTEM_NS__|kserve-operator-system|g" \
         "${PACKAGE_DIR}/setup-credentials.sh"
 fi
 chmod +x "${PACKAGE_DIR}/setup-credentials.sh"
 echo "Generated setup-credentials.sh in the customer package (credentials provided at runtime — not embedded)."
+
+# Generate enable-ingress.sh — wraps the ConfigMap patch + controller restart
+# needed to flip KServe from RawDeployment-no-Ingress mode (default) to
+# create-Ingress-via-<class> mode. Always generated; only relevant if the
+# user wants external URLs via an ingress controller (nginx, haproxy, etc.).
+cat > "${PACKAGE_DIR}/enable-ingress.sh" <<'INGRESS_EOF'
+#!/bin/bash
+# =============================================================================
+# enable-ingress.sh — enable Kubernetes Ingress creation in KServe
+#
+# Patches inferenceservice-config so KServe creates Ingress resources for
+# InferenceServices. By default KServe in Raw mode disables this — you only
+# need this script if you want external-URL access via an ingress controller
+# (nginx, haproxy, traefik, etc.).
+#
+# Usage:
+#   bash enable-ingress.sh                      # default: ns=kserve, class=nginx
+#   KSERVE_NS=my-kserve bash enable-ingress.sh  # custom KServe ns
+#   bash enable-ingress.sh --class haproxy      # custom ingress class
+#
+# Prerequisites:
+#   - KServe is installed in $KSERVE_NS (CR phase Ready, controller pod up)
+#   - Your chosen ingress controller is installed and registered as an
+#     IngressClass on the cluster
+#
+# After running:
+#   Existing InferenceServices were created without an Ingress and need to
+#   be recreated to pick up the new config:
+#     kubectl delete isvc <name>
+#     kubectl apply -f <isvc-yaml>
+# =============================================================================
+set -e
+
+KSERVE_NS="${KSERVE_NS:-kserve}"
+INGRESS_CLASS="nginx"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --class) INGRESS_CLASS="$2"; shift 2 ;;
+        --ns)    KSERVE_NS="$2"; shift 2 ;;
+        -h|--help)
+            sed -n '3,24p' "$0" | sed 's/^# \?//'
+            exit 0
+            ;;
+        *) echo "Unknown arg: $1"; echo "Usage: bash enable-ingress.sh [--class <name>] [--ns <kserve-ns>]"; exit 1 ;;
+    esac
+done
+
+if ! kubectl get cm inferenceservice-config -n "${KSERVE_NS}" >/dev/null 2>&1; then
+    echo "❌ ConfigMap inferenceservice-config not found in namespace '${KSERVE_NS}'."
+    echo "   Has KServe been installed there?  Check: kubectl get kserverawmode -A"
+    exit 1
+fi
+
+echo "Patching inferenceservice-config in '${KSERVE_NS}':"
+echo "  ingressClassName       = ${INGRESS_CLASS}"
+echo "  disableIngressCreation = false"
+
+# The 'ingress' field is a JSON-encoded string inside the ConfigMap — parse,
+# modify, re-serialize. --force-conflicts takes ownership from the operator's
+# SSA field manager.
+kubectl get cm inferenceservice-config -n "${KSERVE_NS}" -o json \
+  | INGRESS_CLASS="${INGRESS_CLASS}" python3 -c "
+import json, sys, os
+cm = json.load(sys.stdin)
+ing = json.loads(cm['data']['ingress'])
+ing['ingressClassName'] = os.environ['INGRESS_CLASS']
+ing['disableIngressCreation'] = False
+cm['data']['ingress'] = json.dumps(ing)
+cm['metadata'].pop('managedFields', None)
+print(json.dumps(cm))
+" | kubectl apply --server-side --force-conflicts -f - >/dev/null
+
+echo "Restarting kserve-controller-manager..."
+kubectl rollout restart deployment kserve-controller-manager -n "${KSERVE_NS}" >/dev/null
+kubectl wait --for=condition=Ready pods -l control-plane=kserve-controller-manager -n "${KSERVE_NS}" --timeout=120s
+
+echo ""
+echo "✅ KServe Ingress creation enabled (class: ${INGRESS_CLASS}, ns: ${KSERVE_NS})."
+echo ""
+echo "Existing InferenceServices need to be recreated to pick up the new config:"
+echo "   kubectl delete isvc <name>"
+echo "   kubectl apply -f <isvc-yaml>"
+INGRESS_EOF
+chmod +x "${PACKAGE_DIR}/enable-ingress.sh"
+echo "Generated enable-ingress.sh — customer runs this to enable external-URL access via an ingress controller."
 
 
 if [ "$GEN_OLM_BUNDLE" = true ]; then
@@ -807,7 +1041,24 @@ echo "You can share the '${TARGET_DIR_NAME}-package' folder for immediate deploy
 
 if [ "$GEN_OLM_BUNDLE" = true ]; then
     echo ""
-    echo "To deploy via OLM, execute the following command:"
-    echo "  operator-sdk run bundle ${IMAGE_TAG}-bundle"
+    if [ -n "${CUSTOMER_REGISTRY}" ]; then
+        echo "To deploy via OLM (customer-registry flow):"
+        echo "  1. cd ${PACKAGE_DIR##*/}"
+        echo "  2. bash mirror-images.sh --archive             # then transfer to customer site"
+        echo "  3. bash mirror-images.sh --load --user <u> --pass <t>"
+        echo "  4. bash setup-credentials.sh --user <u> --pass <t>"
+        echo "  5. bash deploy-bundle.sh dockerhub-creds       # interactive helper"
+        echo ""
+        echo "  …or run operator-sdk directly against the customer registry:"
+        echo "  operator-sdk run bundle ${CUSTOMER_BUNDLE} \\"
+        echo "    --namespace kserve-operator-system \\"
+        echo "    --install-mode SingleNamespace=kserve \\"
+        echo "    --pull-secret-name dockerhub-creds"
+    else
+        echo "To deploy via OLM, execute the following command:"
+        echo "  operator-sdk run bundle ${IMAGE_TAG}-bundle \\"
+        echo "    --namespace kserve-operator-system \\"
+        echo "    --install-mode SingleNamespace=kserve"
+    fi
 fi
 echo "================================================================="
