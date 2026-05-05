@@ -207,38 +207,36 @@ bash setup-credentials.sh --user <registry-user> --pass <registry-token>
 bash setup-credentials.sh
 ```
 
-### Step 3 — Create the KServe namespace
+### Step 3 — Create namespaces
 
-The operator does **not** create the KServe namespace automatically — you must create it before deploying.
+The operator pod always runs in a fixed `kserve-operator-system` namespace. The CR and the KServe runtime live **together** in a namespace of your choice — defaults to `kserve`, but you can pick anything (e.g. `my-kserve`) and the operator's apply-time namespace rewriting will install KServe there. The OperatorGroup defined in Step 4 is the single source of truth.
 
 ```bash
-# Default namespace (matches the CR default):
-kubectl create namespace kserve
+# Pick the namespace name you want for KServe (default: 'kserve').
+# Both the KServeRawMode CR and the KServe runtime will live here.
+KSERVE_NS=kserve
 
-# Or use a custom namespace — you will need to set spec.kserveNamespace in the CR:
-kubectl create namespace <your-namespace>
+kubectl create namespace "${KSERVE_NS}"          || true
+kubectl create namespace kserve-operator-system  || true
 ```
 
 ### Step 4 — Deploy the operator
 
 **Option A: OLM Bundle (recommended, `InstallMode: SingleNamespace`)**
 
-`SingleNamespace` mode requires a **dedicated operator namespace** with an `OperatorGroup` that targets the namespace the CR will be created in (e.g. `default`). The operator must NOT be installed into `default` or `operators` (those already have OperatorGroups from OLM install).
-
 ```bash
-# 4a. Create a dedicated namespace for the operator itself
-kubectl create namespace kserve-operator-system
-
-# 4b. Create the pull secret in that namespace (needed to pull the operator image)
+# 4a. (Optional) Pull secret in the operator namespace, only if your images are private.
+#     Skip if pulling from a public registry (Docker Hub anonymous, etc.).
 kubectl create secret docker-registry dockerhub-creds \
   --docker-server=docker.io \
   --docker-username=<registry-user> \
   --docker-password=<registry-token> \
   -n kserve-operator-system
 
-# 4c. Create an OperatorGroup in the operator namespace, targeting 'default'
-#     (the namespace where the KServeRawMode CR will live)
-kubectl apply -f - <<'EOF'
+# 4b. OperatorGroup targets the chosen KServe namespace.
+#     This is what drives WATCH_NAMESPACE in the operator pod, which the
+#     auto-init reads to decide where to create the default CR.
+kubectl apply -f - <<EOF
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup
 metadata:
@@ -246,42 +244,44 @@ metadata:
   namespace: kserve-operator-system
 spec:
   targetNamespaces:
-    - default
+    - ${KSERVE_NS}
 EOF
 
-# 4d. Deploy via OLM bundle into the dedicated operator namespace
-#     Replace <version> with your actual image version tag (e.g. v302, v303)
+# 4c. Deploy via OLM bundle into the dedicated operator namespace.
+#     Replace <version> with your actual image version tag (e.g. v403, v404).
 operator-sdk run bundle docker.io/akashneha/kserve-raw-operator:<version>-bundle \
-  --pull-secret-name dockerhub-creds \
   --namespace kserve-operator-system
+# (add `--pull-secret-name dockerhub-creds` if 4a was needed)
 ```
 
 > **Bundle image tag:** The bundle image tag is printed at the end of `generate-kserve-operator.sh` output, in the format `<image-tag>-bundle`.
-> Example: if you built with `-i docker.io/akashneha/kserve-raw-operator:v302`, the bundle image is `docker.io/akashneha/kserve-raw-operator:v302-bundle`.
+> Example: if you built with `-i docker.io/akashneha/kserve-raw-operator:v403`, the bundle image is `docker.io/akashneha/kserve-raw-operator:v403-bundle`.
 
-> **Customer registry flow:** If using `deploy-bundle.sh`, it will prompt you. Run `mirror-images.sh` first to push images to the customer registry, then run `deploy-bundle.sh` — it handles the bundle image reference automatically.
+> **Customer registry flow:** If you generated with `--customer-registry`, the package contains `mirror-images.sh` and `deploy-bundle.sh`. Run `mirror-images.sh` first to push images to the customer registry, then `deploy-bundle.sh` — it handles the bundle image reference automatically.
 
-**Option B: Direct manifests (no OLM needed — skip Steps 1, 3, and 4a–4c)**
+**Option B: Direct manifests (no OLM needed — skip Steps 1 and 4)**
 ```bash
 kubectl apply -f operator-deployment.yaml
+# Note: direct deploy uses the bundled defaults (kserve-operator-system + kserve).
+# To use a custom KServe namespace name without OLM, use the standalone install.sh
+# in p-kserve-raw with KSERVE_NAMESPACE=<your-name> set in the env.
 ```
 
-> **Auto-Init:** The operator automatically creates a default `KServeRawMode` CR on startup targeting namespace `kserve`. KServe installation begins immediately — no manual `kubectl apply -f kserve-rawmode.yaml` required.
-> To install into a different namespace, apply the CR manually with `spec.kserveNamespace` set to your namespace.
+> **Auto-Init:** The operator automatically creates a default `KServeRawMode` CR on startup, in the namespace named in the OperatorGroup's `targetNamespaces`. KServe installation begins immediately — no manual `kubectl apply -f kserve-rawmode.yaml` required.
 
 ### Step 5 — Watch installation progress
 ```bash
 kubectl get kserverawmode -A -w
 ```
-Expected progression:
+Expected progression (using default `kserve` namespace):
 ```
 NAMESPACE   NAME             PHASE                    AGE
-default     kserve-rawmode   ValidatingCertManager    2s
-default     kserve-rawmode   InstallingCRDs           8s
-default     kserve-rawmode   InstallingRBAC           10s
-default     kserve-rawmode   InstallingCore           11s
-default     kserve-rawmode   InstallingRuntimes       38s
-default     kserve-rawmode   Ready                    43s
+kserve      kserve-rawmode   ValidatingCertManager    2s
+kserve      kserve-rawmode   InstallingCRDs           8s
+kserve      kserve-rawmode   InstallingRBAC           10s
+kserve      kserve-rawmode   InstallingCore           11s
+kserve      kserve-rawmode   InstallingRuntimes       38s
+kserve      kserve-rawmode   Ready                    43s
 ```
 
 If cert-manager is missing, the phase will show `CertManagerNotFound` and the operator logs will display:

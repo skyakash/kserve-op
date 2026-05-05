@@ -42,14 +42,15 @@ This package contains the fully compiled deployment manifests required to instal
 
 If the operator image is hosted on a private registry (e.g. Docker Hub with auth), a pull secret must exist in a few namespaces before the operator can pull its own controller image.
 
-**Namespace lifecycle** — no manual namespace creation is needed:
+**Namespace lifecycle:**
 
 | Namespace | Created by |
 |---|---|
 | `default` | Always exists |
-| `kserve-operator-system` | `kubectl apply -f operator-deployment.yaml` |
+| `cert-manager` | User (cluster prerequisite — `kubectl apply -f cert-manager.yaml`) |
+| `kserve-operator-system` | `kubectl apply -f operator-deployment.yaml` (direct) or user (OLM, before `operator-sdk run bundle`) |
 | `olm`, `operators` | `operator-sdk olm install` |
-| `kserve`, `cert-manager` | The operator's reconcile loop (fully automatic) |
+| KServe target ns (default `kserve`, overridable) | User (before deploying the operator). The CR and the KServe runtime live here together — driven by the OperatorGroup's `targetNamespaces`. |
 
 ### Using `setup-credentials.sh` (if provided in this package)
 
@@ -109,18 +110,20 @@ If you have Operator Lifecycle Manager installed, you can deploy the operator as
 
 ```bash
 # Run the bundle (pass your pull secret if images are on a private registry)
-# Note: the bundle runs with InstallMode=OwnNamespace by default (operator manages only its own namespace)
+# The bundle runs with InstallMode=SingleNamespace. Before running, create an
+# OperatorGroup in kserve-operator-system that targets the KServe namespace.
 operator-sdk run bundle <your-bundle-image-tag> \
-  --pull-secret-name docker-pull-secret
+  --namespace kserve-operator-system \
+  --pull-secret-name docker-pull-secret   # omit if image is public
 ```
 
 ---
 
 ### Step 2: Watch KServe Auto-Installation
 
-The operator automatically creates a default `KServeRawMode` CR on startup and begins installing KServe components (cert-manager, Namespace, CRDs, RBAC, Core Controllers, and Runtimes). No manual CR creation is needed.
+The operator automatically creates a default `KServeRawMode` CR on startup, in the namespace dictated by the OperatorGroup's `targetNamespaces`. KServe components (CRDs, RBAC, Core Controllers, Runtimes) are then installed into that same namespace via apply-time YAML rewriting. cert-manager is **not** installed by the operator — it is a cluster prerequisite.
 
-> **Note:** If you need to delay installation, you can set the environment variable `DISABLE_AUTO_INIT=true` on the controller manager. In that case, manually apply `kubectl apply -f kserve-rawmode.yaml` when ready.
+No manual CR creation is needed.
 
 ---
 
@@ -132,15 +135,15 @@ The operator progresses through granular phases — no manual `sleep` commands n
 kubectl get kserverawmode -A -w
 ```
 
-Expected output:
+Expected output (using default `kserve` namespace):
 ```
-NAMESPACE   NAME                   PHASE                   AGE
-default     kserve-rawmode   InstallingCertManager   5s
-default     kserve-rawmode   InstallingCRDs          25s
-default     kserve-rawmode   InstallingRBAC          27s
-default     kserve-rawmode   InstallingCore          28s
-default     kserve-rawmode   InstallingRuntimes      55s
-default     kserve-rawmode   Ready                   60s
+NAMESPACE   NAME             PHASE                   AGE
+kserve      kserve-rawmode   ValidatingCertManager   2s
+kserve      kserve-rawmode   InstallingCRDs          8s
+kserve      kserve-rawmode   InstallingRBAC          10s
+kserve      kserve-rawmode   InstallingCore          11s
+kserve      kserve-rawmode   InstallingRuntimes      38s
+kserve      kserve-rawmode   Ready                   43s
 ```
 
 Once `Ready`, verify all KServe system components are up:

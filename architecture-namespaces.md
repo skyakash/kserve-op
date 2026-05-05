@@ -383,10 +383,12 @@ The original Path 1 plan kept a separate `spec.kserveNamespace` field. This desi
 
 ---
 
-## 10. Open questions for review
+## 10. Resolved design decisions
 
-Before we commit:
+After review, the team committed to these answers (now reflected in the implementation):
 
-1. Should we **drop `spec.kserveNamespace` from the CRD entirely**, or keep it as a deprecated/ignored field for back-compat with users who already have it set?
-2. Should the **operator namespace name be hardcoded** to `kserve-operator-system`, or remain a generator-time variable (current behavior, defaults to `<TARGET_DIR_NAME>-system`)?
-3. Should the **standalone `install.sh`** (no-operator path) accept the namespace as an argument, or remain locked to `kserve`? Symmetry with the operator path argues for a flag; simplicity argues for hardcoding.
+| Decision | Choice | Rationale |
+|---|---|---|
+| `spec.kserveNamespace` field on the CRD | **Dropped entirely.** | The CR's `metadata.namespace` is the single source of truth — a separate spec field would only invite confusion (which one wins on mismatch?). Pre-1.0 branch, no users in the wild. |
+| Operator pod's namespace | **Hardcoded to `kserve-operator-system`.** | Predictable, well-known location decoupled from the Go project directory name (the `-t` flag still controls the project dir, but the runtime ns is constant). Deploy commands in QUICK_START.md become guaranteed-correct rather than coincidentally-right. |
+| Standalone `install.sh` (no-operator path) | **Accepts `KSERVE_NAMESPACE` env var, default `kserve`.** | Symmetric with the operator path. The script rewrites `namespace: kserve` references in the bundled manifests on the way to `kubectl`, anchored on YAML field syntax to avoid touching identifiers like `kserve-controller-manager` or image refs like `kserve/agent:latest`. |
