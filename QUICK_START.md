@@ -311,8 +311,15 @@ kubectl wait --for=condition=Ready pods -l app.kubernetes.io/component=controlle
 ```
 
 **Patch KServe to enable Ingress creation with nginx:**
+
+The ConfigMap is owned by the operator (Server-Side Apply field manager), so `kubectl apply -f -` will warn about a missing `last-applied-configuration` annotation. The patch still succeeds; pass `--server-side` to silence the warning if it bothers you.
+
 ```bash
-kubectl get cm inferenceservice-config -n kserve -o json | python3 -c "
+# KSERVE_NS = the namespace KServe is installed into (default: 'kserve').
+# Adjust if you deployed to a custom-named namespace.
+KSERVE_NS=kserve
+
+kubectl get cm inferenceservice-config -n "${KSERVE_NS}" -o json | python3 -c "
 import json, sys
 cm = json.load(sys.stdin)
 ingress = json.loads(cm['data']['ingress'])
@@ -320,28 +327,35 @@ ingress['ingressClassName'] = 'nginx'
 ingress['disableIngressCreation'] = False
 cm['data']['ingress'] = json.dumps(ingress, indent=4)
 print(json.dumps(cm))
-" | kubectl apply -f -
+" | kubectl apply --server-side -f -
 
 # Restart controller to pick up config change
-kubectl rollout restart deployment kserve-controller-manager -n kserve
+kubectl rollout restart deployment kserve-controller-manager -n "${KSERVE_NS}"
+kubectl rollout status deployment kserve-controller-manager -n "${KSERVE_NS}" --timeout=120s
 ```
 
 **Add local DNS entry** (for Docker Desktop / local clusters):
 ```bash
-sudo bash -c 'echo "127.0.0.1 sklearn-iris-default.example.com" >> /etc/hosts'
+# Idempotent — safe to re-run; the entry is only appended once.
+HOST_ENTRY="127.0.0.1 sklearn-iris-default.example.com"
+grep -qF "${HOST_ENTRY}" /etc/hosts \
+  || sudo bash -c "echo '${HOST_ENTRY}' >> /etc/hosts"
 ```
 
 **Recreate the InferenceService** (so KServe creates the Ingress with the new config):
 ```bash
-kubectl delete isvc sklearn-iris
+kubectl delete isvc sklearn-iris --ignore-not-found
 kubectl apply -f 06-sample-model/sklearn-iris.yaml
 kubectl get isvc sklearn-iris -w   # wait for READY=True
 ```
 
 **Verify Ingress and test:**
+
+After the ISVC reaches `READY=True`, the Ingress object is created — but its `ADDRESS` column may be empty for the first ~30s while nginx-ingress programs the route. Wait until `ADDRESS` is `localhost` before curl-ing.
+
 ```bash
 kubectl get ingress -A
-# Expected:
+# Expected (after ADDRESS populates):
 # NAMESPACE  NAME          CLASS  HOSTS                                    ADDRESS    PORTS  AGE
 # default    sklearn-iris  nginx  sklearn-iris-default.example.com,...     localhost  80     30s
 
