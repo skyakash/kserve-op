@@ -1,6 +1,11 @@
 #!/bin/bash
 set -e
 
+# KSERVE_NAMESPACE — the namespace into which KServe will be installed.
+# Defaults to "kserve". Override by exporting before running:
+#   KSERVE_NAMESPACE=my-kserve ./install.sh
+KSERVE_NAMESPACE="${KSERVE_NAMESPACE:-kserve}"
+
 # Pre-flight: cert-manager is a cluster prerequisite (not bundled).
 echo "Pre-flight: checking cert-manager..."
 if ! kubectl get crd certificates.cert-manager.io >/dev/null 2>&1; then
@@ -16,25 +21,39 @@ if ! kubectl get crd certificates.cert-manager.io >/dev/null 2>&1; then
 fi
 echo "      cert-manager detected."
 
+echo "Target namespace: ${KSERVE_NAMESPACE}"
+
+# rewrite_ns rewrites every "kserve" namespace reference in a manifest
+# stream to ${KSERVE_NAMESPACE}. The regex is anchored to leading
+# whitespace + line end so identifiers like "kserve-controller-manager"
+# and image refs like "kserve/agent:latest" are NOT touched. Only YAML
+# fields whose value is exactly "kserve" (the baked placeholder) match.
+rewrite_ns() {
+    sed "s|^\([[:space:]]*\)namespace: kserve\$|\1namespace: ${KSERVE_NAMESPACE}|"
+}
+
 echo "1. Installing KServe CRDs..."
+# CRDs are cluster-scoped — no rewrite needed.
 kubectl apply --server-side -f 02-kserve-crds/kserve-crds.yaml
 
-echo "2. Installing KServe RBAC..."
-kubectl create namespace kserve || true
-kubectl apply -f 03-kserve-rbac/kserve-rbac.yaml
+echo "2. Installing KServe RBAC (rewriting namespace refs to '${KSERVE_NAMESPACE}')..."
+kubectl create namespace "${KSERVE_NAMESPACE}" || true
+rewrite_ns < 03-kserve-rbac/kserve-rbac.yaml | kubectl apply -f -
 
-echo "3. Installing KServe Core Components (Configured for Raw Mode)..."
-kubectl apply --server-side -f 04-kserve-core/kserve-core.yaml
+echo "3. Installing KServe Core Components (rewriting namespace refs to '${KSERVE_NAMESPACE}')..."
+rewrite_ns < 04-kserve-core/kserve-core.yaml | kubectl apply --server-side -f -
 
 echo "Waiting for KServe Webhooks to stabilize..."
-kubectl wait --for=condition=ready pod -l control-plane=kserve-controller-manager -n kserve --timeout=300s
+kubectl wait --for=condition=ready pod -l control-plane=kserve-controller-manager -n "${KSERVE_NAMESPACE}" --timeout=300s
 sleep 15
 
 echo "4. Installing Default ClusterServingRuntimes..."
+# ClusterServingRuntimes are cluster-scoped — no rewrite needed.
 kubectl apply --server-side -f 05-kserve-runtimes/kserve-cluster-resources.yaml
 
 echo "=========================================="
 echo "   KServe Raw Mode Installation Complete  "
+echo "   Installed into namespace: ${KSERVE_NAMESPACE}"
 echo "=========================================="
 echo ""
 echo "To verify the installation works, you can deploy a sample InferenceService:"

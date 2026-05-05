@@ -33,14 +33,22 @@ The installer (`install.sh`) checks for cert-manager and exits with a clear erro
 ## Installation
 Ensure you are connected to a healthy Kubernetes cluster and that **cert-manager is installed** (see above).
 
+### Choosing the KServe namespace
+
+By default, KServe is installed into a namespace named `kserve`. To install into a custom-named namespace (for example `my-kserve`), set the `KSERVE_NAMESPACE` environment variable. The installer creates the namespace if it doesn't exist and rewrites every namespace reference in the bundled manifests to match.
+
 ### Fast Installation
 Simply execute the installer script from this directory:
 ```bash
+# Default — installs into "kserve"
 ./install.sh
+
+# Or pick your own namespace name
+KSERVE_NAMESPACE=my-kserve ./install.sh
 ```
 
 ### Manual Installation
-If applying manually, you must follow this exact order and wait for the pods in the previous step to become `Ready` before proceeding:
+If applying manually, you must follow this exact order and wait for the pods in the previous step to become `Ready` before proceeding. The bundled manifests have `namespace: kserve` baked in — for a different namespace name, pipe each through `sed` to rewrite (or just run `./install.sh` which handles this automatically).
 ```bash
 kubectl apply --server-side -f 02-kserve-crds/kserve-crds.yaml
 kubectl apply -f 03-kserve-rbac/kserve-rbac.yaml
