@@ -196,7 +196,7 @@ flowchart LR
 
 ## End-to-End Test Validation
 
-Verified on a fresh Docker Desktop Kubernetes cluster, covering both the default-namespace path and a custom-namespace install (Design C). Full per-test details and bug findings live in [extra-docs/test-report-customer-registry.md](extra-docs/test-report-customer-registry.md).
+Verified on a fresh Docker Desktop Kubernetes cluster, covering both the default-namespace path and a custom-namespace install (Design C). Full per-test details and bug findings live in [test-report-customer-registry.md](test-report-customer-registry.md).
 
 ### Default `kserve` namespace
 
