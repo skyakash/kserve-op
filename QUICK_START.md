@@ -92,6 +92,15 @@ Both `mirror-images.sh` and `setup-credentials.sh` use the same `--user`/`--pass
 
 ---
 
+> **Cluster prerequisites (both Options A and B below assume these are in place):**
+> 1. **cert-manager** installed (see Part B Step 0 for the install commands)
+> 2. **OLM** installed (`operator-sdk olm install`)
+> 3. The **two namespaces created** before running `deploy-bundle.sh`:
+>    ```bash
+>    kubectl create namespace kserve              # the KServe target ns (override with KSERVE_NS env var)
+>    kubectl create namespace kserve-operator-system   # always — the operator pod's home
+>    ```
+
 **Option A — Online (both registries accessible from one machine):**
 
 Run all commands from the package directory:
@@ -101,17 +110,13 @@ cd p-kserve-operator-package
 # 1. Copy images from source registry → customer registry
 bash mirror-images.sh --user <customer-user> --pass <customer-token>
 
-# 2. Install OLM (once per cluster)
-operator-sdk olm install
-kubectl get pods -n olm   # wait until all pods are Running
-
-# 3. Create pull secrets on the cluster
+# 2. Set up pull credentials on the cluster
 bash setup-credentials.sh --user <customer-user> --pass <customer-token>
 
-# 4. Deploy the operator
-bash deploy-bundle.sh
-# For private clusters that require explicit pull secrets:
-# bash deploy-bundle.sh dockerhub-creds
+# 3. Deploy the operator (interactive: choose Option A=OLM bundle or B=direct)
+bash deploy-bundle.sh dockerhub-creds   # or `bash deploy-bundle.sh` if image is public
+# Override KSERVE_NS to install KServe into a custom-named namespace:
+#   KSERVE_NS=my-kserve bash deploy-bundle.sh dockerhub-creds
 ```
 
 ---
@@ -133,22 +138,12 @@ cd p-kserve-operator-package
 # 1. Load and push archives to customer registry
 bash mirror-images.sh --load --user <customer-user> --pass <customer-token>
 
-# 2. Install OLM (once per cluster)
-operator-sdk olm install
-kubectl get pods -n olm   # wait until all pods are Running
-
-# 3. Create pull secrets on the cluster
+# 2. Set up pull credentials on the cluster
 bash setup-credentials.sh --user <customer-user> --pass <customer-token>
 
-# 4. Deploy the operator
-bash deploy-bundle.sh
-# For private clusters that require explicit pull secrets:
-# bash deploy-bundle.sh dockerhub-creds
+# 3. Deploy the operator
+bash deploy-bundle.sh dockerhub-creds   # or KSERVE_NS=my-kserve bash deploy-bundle.sh dockerhub-creds
 ```
-
-This outputs two directories:
-- `p-kserve-operator/` — the compiled Go operator project
-- `p-kserve-operator-package/` — the **distributable package** (share this with deployers)
 
 ---
 

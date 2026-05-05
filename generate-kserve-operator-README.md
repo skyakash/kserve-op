@@ -265,6 +265,15 @@ This generates three additional files in `p-kserve-operator-package/`:
 | `deploy-bundle.sh` | Interactive installer: prompts whether to use OLM bundle or direct `kubectl apply`. |
 | `setup-credentials.sh` | Creates pull secrets. Accepts `--user`/`--pass` CLI args or prompts interactively. |
 
+> **Cluster prerequisites for both deployer workflows:**
+> 1. cert-manager installed (`kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.17.2/cert-manager.yaml`)
+> 2. OLM installed (`operator-sdk olm install`)
+> 3. Both namespaces pre-created on the cluster:
+>    ```bash
+>    kubectl create namespace kserve                  # KServe target ns (override with KSERVE_NS)
+>    kubectl create namespace kserve-operator-system  # operator pod home
+>    ```
+
 **Deployer workflow — Option A (online, both registries on one machine):**
 ```bash
 cd p-kserve-operator-package
@@ -272,14 +281,13 @@ cd p-kserve-operator-package
 # 1. Mirror images to customer registry
 bash mirror-images.sh --user <customer-user> --pass <customer-token>
 
-# 2. Install OLM (once per cluster)
-operator-sdk olm install
-
-# 3. Set up pull credentials
+# 2. Set up pull credentials
 bash setup-credentials.sh --user <customer-user> --pass <customer-token>
 
-# 4. Deploy
+# 3. Deploy
 bash deploy-bundle.sh dockerhub-creds
+# To install KServe into a custom namespace name:
+#   KSERVE_NS=my-kserve bash deploy-bundle.sh dockerhub-creds
 ```
 
 **Deployer workflow — Option B (offline/air-gapped, images shipped as archives):**
@@ -293,9 +301,10 @@ bash mirror-images.sh --archive
 # --- On the customer (air-gapped) machine ---
 cd p-kserve-operator-package
 bash mirror-images.sh --load --user <customer-user> --pass <customer-token>
-operator-sdk olm install
 bash setup-credentials.sh --user <customer-user> --pass <customer-token>
 bash deploy-bundle.sh dockerhub-creds
+# (cert-manager and OLM must already be installed on the air-gapped cluster
+#  — typically pre-staged by the cluster admin before the package arrives)
 ```
 
 > **Note:** `mirror-images.sh` prompts interactively for credentials if `--dest-user`/`--dest-pass` are not provided. No credentials are embedded in the generated scripts.
