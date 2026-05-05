@@ -88,62 +88,27 @@ When `--customer-registry` is used, the generated package (`p-kserve-operator-pa
 
 Both `mirror-images.sh` and `setup-credentials.sh` use the same `--user`/`--pass` arguments and will prompt interactively if not provided.
 
-> Without `--customer-registry`, the package contains only `setup-credentials.sh` plus the static manifests (`operator-deployment.yaml`, `kserve-rawmode.yaml`, `06-sample-model/`, `README.md`). The standard install flow uses `operator-sdk run bundle` directly — see Part B Step 4 below.
+> Without `--customer-registry`, the package contains only `setup-credentials.sh` plus the static manifests (`operator-deployment.yaml`, `kserve-rawmode.yaml`, `06-sample-model/`, `README.md`).
 
 ---
 
-> **Cluster prerequisites (both Options A and B below assume these are in place):**
-> 1. **cert-manager** installed (see Part B Step 0 for the install commands)
-> 2. **OLM** installed (`operator-sdk olm install`)
-> 3. The **two namespaces created** before running `deploy-bundle.sh`:
->    ```bash
->    kubectl create namespace kserve              # the KServe target ns (override with KSERVE_NS env var)
->    kubectl create namespace kserve-operator-system   # always — the operator pod's home
->    ```
+### *(Air-gapped only)* Package images for transfer
 
-**Option A — Online (both registries accessible from one machine):**
-
-Run all commands from the package directory:
-```bash
-cd p-kserve-operator-package
-
-# 1. Copy images from source registry → customer registry
-bash mirror-images.sh --user <customer-user> --pass <customer-token>
-
-# 2. Set up pull credentials on the cluster
-bash setup-credentials.sh --user <customer-user> --pass <customer-token>
-
-# 3. Deploy the operator (interactive: choose Option A=OLM bundle or B=direct)
-bash deploy-bundle.sh dockerhub-creds   # or `bash deploy-bundle.sh` if image is public
-# Override KSERVE_NS to install KServe into a custom-named namespace:
-#   KSERVE_NS=my-kserve bash deploy-bundle.sh dockerhub-creds
-```
-
----
-
-**Option B — Offline / Air-gapped (images shipped as tar archives):**
+If you generated with `--customer-registry` and the customer cluster cannot reach the build registry, archive the operator + bundle images on the builder side so they can be shipped offline:
 
 ```bash
-# ── BUILDER MACHINE (has internet access) ──────────────────────────
 cd p-kserve-operator-package
-
-# Save images to local tar archives
 bash mirror-images.sh --archive
-# Produces: images/operator.tar + images/bundle.tar
-
-# Transfer the ENTIRE package folder (including images/) to the customer machine
-# ── CUSTOMER MACHINE (air-gapped) ──────────────────────────────────
-cd p-kserve-operator-package
-
-# 1. Load and push archives to customer registry
-bash mirror-images.sh --load --user <customer-user> --pass <customer-token>
-
-# 2. Set up pull credentials on the cluster
-bash setup-credentials.sh --user <customer-user> --pass <customer-token>
-
-# 3. Deploy the operator
-bash deploy-bundle.sh dockerhub-creds   # or KSERVE_NS=my-kserve bash deploy-bundle.sh dockerhub-creds
+# Produces images/operator.tar + images/bundle.tar
 ```
+
+Ship the **entire `p-kserve-operator-package/` folder, including `images/`** to the customer machine (USB, secure gateway, etc.). The customer-side load + deploy steps are in **Part B** below.
+
+For online customer-registry deploys (build and customer registries reachable from the same machine), skip the `--archive` step — the customer can run `mirror-images.sh` in online mode directly per Part B's callout.
+
+---
+
+That completes the **builder** side. **Part B** below covers the cluster install — both the standard and customer-registry variants.
 
 ---
 
@@ -154,6 +119,18 @@ You only need the `*-package/` folder and `kubectl`/`operator-sdk` on your machi
 ```bash
 cd p-kserve-operator-package   # all commands below run from inside this folder
 ```
+
+> **Customer-registry workflow** *(only if your package was generated with `--customer-registry` — you'll see `mirror-images.sh` and `deploy-bundle.sh` in the directory)*: before Step 0, bring the operator + bundle images into your registry. Run **one** of:
+>
+> ```bash
+> # (a) Online — both build and customer registries reachable from this machine:
+> bash mirror-images.sh --user <customer-user> --pass <customer-token>
+>
+> # (b) Air-gapped — images already shipped as tar files in images/:
+> bash mirror-images.sh --load --user <customer-user> --pass <customer-token>
+> ```
+>
+> Then continue with the steps below. In **Step 2** pass the **customer-registry** credentials (the cluster will pull from there, not the build registry). In **Step 4** you can use `bash deploy-bundle.sh dockerhub-creds` as a one-line shortcut for the OLM install — it wraps the same `operator-sdk run bundle ... --install-mode SingleNamespace=${KSERVE_NS}` command shown there.
 
 ### Step 0 — Install cert-manager *(cluster pre-requisite)*
 
