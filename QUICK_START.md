@@ -58,6 +58,8 @@ If you are re-running the build (e.g. after a cluster reset), clean both generat
 
 > **Version tagging:** Replace `v300` with your actual release version (e.g. `v302`, `v303`). Use a new tag for each build to avoid stale image caches on the cluster.
 
+> **Behind a corporate proxy or TLS-intercepting firewall?** Add `--cert /path/to/corporate-ca.crt` to the command above. The CA gets injected into the Dockerfile builder stage's trust store so `go mod download` and other build-time fetches can talk to the proxy. The cert is **only in the builder stage** — not in the final distroless operator image — so it doesn't end up shipped to customers. See [generate-kserve-operator-README.md](generate-kserve-operator-README.md) (§ "Building Behind a Corporate Proxy") for details and a verification recipe.
+
 ### Step 2 (Alt) — Customer / Private Registry
 
 If the operator will be deployed to a customer environment with a **private registry** (Artifactory, Harbor, ECR, Docker Hub org, etc.), add `--customer-registry`. This rewrites all image references in the output package and generates two extra helper scripts.

@@ -402,6 +402,53 @@ If your cluster needs a Kubernetes secret to pull images from Docker Hub (to avo
 
 The `dockerhub-creds` secret name will be embedded directly into the operator's pod spec and OLM CSV, so no manual patching is required after deployment.
 
+## Building Behind a Corporate Proxy or TLS-Intercepting Firewall (`--cert`)
+
+If your build machine sits behind a corporate proxy or firewall that intercepts TLS (presents its own CA certificate instead of upstream's), the Docker build will fail when fetching Go modules, base images, or any other HTTPS dependency — the build container won't trust the proxy's CA. The `--cert <path>` flag handles this.
+
+### What it does
+
+When `--cert /path/to/corporate-ca.crt` is passed, the generator modifies the project's Dockerfile to:
+
+1. `COPY` the cert into the **builder stage** at `/usr/local/share/ca-certificates/`
+2. `RUN update-ca-certificates` — concatenates your cert into `/etc/ssl/certs/ca-certificates.crt`
+
+Subsequent build-time fetches (`go mod download`, base-image pulls, etc.) now trust your corporate CA.
+
+### What it does NOT do
+
+- The cert is **only added to the builder stage**, not to the final runtime image. The operator binary ships in a `distroless/static:nonroot` final image with no shell and no extra files — exactly as it would without `--cert`. Customers receive a clean image; your corporate CA never leaves your build environment.
+- It does NOT configure runtime proxy settings. If the operator pod itself needs to reach a proxied endpoint at runtime, you'd handle that at the cluster level (pod env vars, `HTTPS_PROXY`, sidecars, etc.) — not via this flag.
+
+### Usage
+
+```bash
+./generate-kserve-operator.sh \
+  -t p-kserve-operator \
+  -m github.com/your-org/p-kserve-operator \
+  -d your-domain.com \
+  -s p-kserve-raw \
+  -i <registry>/<image>:<tag> \
+  --cert /path/to/corporate-ca.crt \
+  --install-mode SingleNamespace \
+  -b -p -o
+```
+
+### Verification
+
+To confirm the cert was correctly injected, rebuild only the builder stage and decode the trust bundle:
+
+```bash
+cd p-kserve-operator
+docker build --target builder -t cert-check .
+docker run --rm --entrypoint sh cert-check \
+  -c "openssl crl2pkcs7 -nocrl -certfile /etc/ssl/certs/ca-certificates.crt \
+      | openssl pkcs7 -print_certs -noout | grep <your-CA-CN>"
+docker rmi cert-check
+```
+
+See [the test report](extra-docs/test-report-customer-registry.md) (search for "T11") for a worked example.
+
 ## Handling KServe Dependencies (Mirrors)
 
 By default, the KServe manifests extracted by `generate-kserve-raw.sh` reference official images hosted on **Docker Hub** (e.g., `kserve/kserve-controller`) and **Quay.io** (e.g., `quay.io/jetstack/cert-manager-controller`).
