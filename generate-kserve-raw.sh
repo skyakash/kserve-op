@@ -225,11 +225,30 @@ import yaml
 import json
 import sys
 
-# Image-tag pinning (replace :latest with :v0.16.0).
+# Image-tag pinning (replace :latest with :v0.16.0). Applied to every
+# Deployment/DaemonSet container in the manifest.
 IMAGE_PIN = {
+    "kserve/kserve-controller":            "kserve/kserve-controller:v0.16.0",
     "kserve/llmisvc-controller":           "kserve/llmisvc-controller:v0.16.0",
     "kserve/kserve-localmodel-controller": "kserve/kserve-localmodel-controller:v0.16.0",
     "kserve/kserve-localmodelnode-agent":  "kserve/kserve-localmodelnode-agent:v0.16.0",
+}
+
+# storage-initializer is referenced as a string inside ConfigMap JSON
+# fields (localModel.defaultJobImage and storageInitializer.image), not
+# as a container image. Substituted via JSON rewrite below.
+STORAGE_INITIALIZER_OLD = "kserve/storage-initializer:latest"
+STORAGE_INITIALIZER_NEW = "kserve/storage-initializer:v0.16.0"
+
+# Namespace the localmodel controller hardcodes for download Jobs and
+# their bound PVCs. Upstream KServe expects the user to create this
+# namespace as part of install (see test fixtures, but no manifest
+# creates it). We bundle it so the operator creates it during
+# InstallingCore — no extra prereq step for the user.
+LOCALMODEL_JOBS_NS = {
+    "apiVersion": "v1",
+    "kind": "Namespace",
+    "metadata": {"name": "kserve-localmodel-jobs"},
 }
 
 # llmisvc CRD read permission (binary requires it at startup).
@@ -268,6 +287,22 @@ for doc in docs:
             ingress_cfg["ingressClassName"] = ""
             ingress_cfg["disableIngressCreation"] = True
             doc["data"]["ingress"] = json.dumps(ingress_cfg, indent=4)
+        # Enable the LocalModelCache auto-injection. Upstream default is
+        # false, which silently disables the URI-match-and-rewrite that
+        # ties an InferenceService to a cached PVC. With enabled=true,
+        # ISVCs whose storageUri matches an existing LocalModelCache get
+        # the cached PVC mounted automatically.
+        if "localModel" in doc.get("data", {}):
+            lm_cfg = json.loads(doc["data"]["localModel"])
+            lm_cfg["enabled"] = True
+            doc["data"]["localModel"] = json.dumps(lm_cfg, indent=4)
+        # Pin storage-initializer:latest -> :v0.16.0 inside the JSON-blob
+        # ConfigMap fields that reference it (localModel.defaultJobImage,
+        # storageInitializer.image). String replace is safe because the
+        # source uses the exact "kserve/storage-initializer:latest" form.
+        for k, v in doc.get("data", {}).items():
+            if isinstance(v, str) and STORAGE_INITIALIZER_OLD in v:
+                doc["data"][k] = v.replace(STORAGE_INITIALIZER_OLD, STORAGE_INITIALIZER_NEW)
 
     elif kind == "ClusterRole" and name == "llmisvc-manager-role":
         rules = doc.setdefault("rules", [])
@@ -284,6 +319,16 @@ for doc in docs:
             pin_image(c)
 
     output.append(doc)
+
+# Append the kserve-localmodel-jobs Namespace if not already present.
+# (Idempotent: a future upstream that ships this Namespace will skip the append.)
+has_lm_jobs_ns = any(
+    d for d in output
+    if d and d.get("kind") == "Namespace"
+    and d.get("metadata", {}).get("name") == "kserve-localmodel-jobs"
+)
+if not has_lm_jobs_ns:
+    output.append(LOCALMODEL_JOBS_NS)
 
 with open(sys.argv[2], "w") as f:
     yaml.safe_dump_all(output, f)
@@ -308,6 +353,28 @@ cp "${SCRIPT_DIR}/kserve-raw-base/sklearn-iris.yaml.tmpl" "${OUTPUT_DIR}/06-samp
 
 cp "${SCRIPT_DIR}/kserve-raw-base/iris-input.json.tmpl" "${OUTPUT_DIR}/06-sample-model/iris-input.json"
 echo "      Generated sklearn-iris.yaml and iris-input.json."
+
+# LocalModelCache sample — exercises the local-model caching feature
+# introduced in 0.16. Requires at least one node labeled
+# kserve/localmodel=worker so the agent DaemonSet can schedule there.
+# Two flavours generated:
+#   * Online: sourceModelUri is gs:// (needs internet egress)
+#   * Offline: sourceModelUri is pvc:// referencing a pre-populated PVC
+#     (air-gap friendly; user side-loads the model into the source PVC).
+cp "${SCRIPT_DIR}/kserve-raw-base/localmodelcache-nodegroup-sample.yaml.tmpl"           "${OUTPUT_DIR}/06-sample-model/localmodelcache-nodegroup.yaml"
+cp "${SCRIPT_DIR}/kserve-raw-base/localmodelcache-sample.yaml.tmpl"                     "${OUTPUT_DIR}/06-sample-model/localmodelcache.yaml"
+cp "${SCRIPT_DIR}/kserve-raw-base/localmodelcache-isvc-sample.yaml.tmpl"                "${OUTPUT_DIR}/06-sample-model/localmodelcache-isvc.yaml"
+cp "${SCRIPT_DIR}/kserve-raw-base/localmodelcache-offline-source-pvc-sample.yaml.tmpl"  "${OUTPUT_DIR}/06-sample-model/localmodelcache-offline-source-pvc.yaml"
+cp "${SCRIPT_DIR}/kserve-raw-base/localmodelcache-offline-sample.yaml.tmpl"             "${OUTPUT_DIR}/06-sample-model/localmodelcache-offline.yaml"
+cp "${SCRIPT_DIR}/kserve-raw-base/localmodelcache-offline-isvc-sample.yaml.tmpl"        "${OUTPUT_DIR}/06-sample-model/localmodelcache-offline-isvc.yaml"
+echo "      Generated localmodelcache (online + offline) sample manifests."
+
+# llmisvc smoke-test sample — minimal LLMInferenceService that exercises
+# the llmisvc-controller-manager's reconcile path (Deployment + Service
+# creation) without loading a real model. See the YAML header for
+# production-mode instructions (Gateway API CRD prereq + real model URI).
+cp "${SCRIPT_DIR}/kserve-raw-base/llmisvc-sample.yaml.tmpl" "${OUTPUT_DIR}/06-sample-model/llmisvc-smoke.yaml"
+echo "      Generated llmisvc-smoke.yaml."
 
 echo "-----------------------------------------------------------------"
 echo " Creating Installer Script (install.sh)"

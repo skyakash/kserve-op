@@ -1,0 +1,9 @@
+apiVersion: serving.kserve.io/v1alpha1
+kind: LocalModelCache
+metadata:
+  name: sklearn-iris-cache
+spec:
+  sourceModelUri: gs://kfserving-examples/models/sklearn/1.0/model
+  modelSize: 100Mi              # Iris is tiny; this is conservative headroom
+  nodeGroups:
+    - default-worker

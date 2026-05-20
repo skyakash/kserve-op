@@ -1,0 +1,29 @@
+# Source PVC for air-gapped LocalModelCache. The user side-loads model
+# weights into this PVC before applying the LocalModelCache.
+#
+# Loading procedure (one-time, on a machine with internet OR an internal
+# model store):
+#
+#   # 1. Apply this PVC, then start a busybox pod that mounts it.
+#   kubectl apply -f localmodelcache-offline-source-pvc.yaml
+#   kubectl run model-loader --image=busybox --restart=Never \
+#     --overrides='{"spec":{"volumes":[{"name":"v","persistentVolumeClaim":{"claimName":"offline-models-pvc"}}],"containers":[{"name":"model-loader","image":"busybox","command":["sleep","3600"],"volumeMounts":[{"name":"v","mountPath":"/mnt/pvc"}]}]}}'
+#   kubectl wait --for=condition=Ready pod/model-loader
+#
+#   # 2. Side-load the model (path inside PVC MUST match the LocalModelCache
+#   #    sourceModelUri's path suffix).
+#   kubectl exec model-loader -- mkdir -p /mnt/pvc/sklearn/iris/1.0/model
+#   kubectl cp model.joblib default/model-loader:/mnt/pvc/sklearn/iris/1.0/model/model.joblib
+#   kubectl delete pod model-loader
+#
+# Then apply localmodelcache-offline.yaml, which references this PVC.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: offline-models-pvc
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi

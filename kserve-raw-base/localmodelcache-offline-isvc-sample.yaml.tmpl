@@ -1,0 +1,14 @@
+# InferenceService consuming the air-gapped LocalModelCache. The
+# storageUri MUST exactly match the LocalModelCache's spec.sourceModelUri
+# — that's how KServe's defaults webhook recognises the ISVC should be
+# wired to the cache.
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: sklearn-iris-cached-offline
+  annotations:
+    serving.kserve.io/deploymentMode: RawDeployment
+spec:
+  predictor:
+    sklearn:
+      storageUri: pvc://offline-models-pvc/sklearn/iris/1.0/model

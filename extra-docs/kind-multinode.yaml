@@ -1,0 +1,17 @@
+# Multinode kind cluster config for validating LocalModelCache placement
+# on this branch. Two worker nodes lets us prove the per-node fan-out
+# (DaemonSet runs on each labeled worker, one cache PV per node).
+#
+# Usage:
+#   kind create cluster --name desktop --config extra-docs/kind-multinode.yaml
+#   kubectl label node desktop-worker  kserve/localmodel=worker
+#   kubectl label node desktop-worker2 kserve/localmodel=worker
+#
+# Tear down:
+#   kind delete cluster --name desktop
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker
