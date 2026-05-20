@@ -7,6 +7,9 @@ bundle-*/
 # Ignore local KServe source repository clone
 kserve-master/
 
+# Local version-comparison workspace (analysis only, not for commit)
+kserve-diff/
+
 # Temporary test artifacts
 *.log
 inference_result.json
