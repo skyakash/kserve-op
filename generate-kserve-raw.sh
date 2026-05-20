@@ -137,15 +137,50 @@ python3 -c '
 import yaml
 import sys
 
+# Two RBAC fix-ups applied to the kustomize output:
+#
+# 1. ClusterRoleBindings cluster-scoped — the source files only set
+#    subjects[].namespace explicitly for some ServiceAccounts (historically
+#    kserve-controller-manager). Newer KServe versions add CRBs for
+#    localmodel/llmisvc whose subjects omit the namespace; Kubernetes
+#    rejects those at apply time. Default every missing ServiceAccount-
+#    subject namespace to "kserve" so the runtime apply.go can rewrite
+#    it to the user-chosen target namespace.
+#
+# 2. llmisvc-manager-role ClusterRole is missing CRD read permission.
+#    The kserve/llmisvc-controller binary performs a storage-version
+#    migration on startup that reads CRDs — without this permission the
+#    controller pod crashloops with "customresourcedefinitions ...
+#    is forbidden". Neither 0.16 nor master upstream grants this; we
+#    extend the role to match the binary requirement.
+CRD_PERMISSION = {
+    "apiGroups": ["apiextensions.k8s.io"],
+    "resources":  ["customresourcedefinitions"],
+    "verbs":      ["get", "list", "watch"],
+}
+
 output = []
 with open(sys.argv[1], "r") as f:
     docs = yaml.safe_load_all(f)
     for doc in docs:
         if doc:
-            if doc.get("kind") == "ClusterRoleBinding":
+            kind = doc.get("kind")
+            name = doc.get("metadata", {}).get("name", "")
+
+            if kind == "ClusterRoleBinding":
                 for subject in doc.get("subjects", []):
-                    if subject.get("kind") == "ServiceAccount" and subject.get("name") == "kserve-controller-manager":
+                    if subject.get("kind") == "ServiceAccount" and not subject.get("namespace"):
                         subject["namespace"] = "kserve"
+
+            elif kind == "ClusterRole" and name == "llmisvc-manager-role":
+                rules = doc.setdefault("rules", [])
+                already = any(
+                    "apiextensions.k8s.io" in (r.get("apiGroups") or [])
+                    and "customresourcedefinitions" in (r.get("resources") or [])
+                    for r in rules
+                )
+                if not already:
+                    rules.append(CRD_PERMISSION)
         output.append(doc)
 
 with open(sys.argv[2], "w") as f:
@@ -175,35 +210,80 @@ if ! grep -q "^kind: Issuer$" "${CORE_TMP}"; then
     ${KUSTOMIZE} build config/certmanager >> "${CORE_TMP}"
 fi
 
-# CRITICAL: We must modify the inferenceservice-config ConfigMap inline to force RawDeployment mode
-# and remove all Istio/KNative references from the ingress config.
+# Post-processing on the kustomize output:
+#   1. inferenceservice-config ConfigMap: force RawDeployment, disable Istio/Ingress.
+#   2. Pin localmodel + llmisvc controller images to v0.16.0. KServe 0.16
+#      ships these manifests with :latest, which drifts and can pull a
+#      newer binary whose RBAC needs / volume expectations exceed what
+#      the 0.16 manifests provide. Pinning gives reproducibility.
+#   3. llmisvc-manager-role ClusterRole: add CRD read permission so the
+#      llmisvc controller's startup storage-version migration succeeds.
+#      Neither 0.16 nor master upstream grants this permission, but the
+#      published binary requires it.
 python3 -c '
 import yaml
 import json
 import sys
 
+# Image-tag pinning (replace :latest with :v0.16.0).
+IMAGE_PIN = {
+    "kserve/llmisvc-controller":           "kserve/llmisvc-controller:v0.16.0",
+    "kserve/kserve-localmodel-controller": "kserve/kserve-localmodel-controller:v0.16.0",
+    "kserve/kserve-localmodelnode-agent":  "kserve/kserve-localmodelnode-agent:v0.16.0",
+}
+
+# llmisvc CRD read permission (binary requires it at startup).
+CRD_PERMISSION = {
+    "apiGroups": ["apiextensions.k8s.io"],
+    "resources":  ["customresourcedefinitions"],
+    "verbs":      ["get", "list", "watch"],
+}
+
+def pin_image(container):
+    img = container.get("image", "")
+    for repo, pinned in IMAGE_PIN.items():
+        if img.startswith(repo + ":") or img == repo:
+            container["image"] = pinned
+            return
+
 output = []
 with open(sys.argv[1], "r") as f:
-    docs = yaml.safe_load_all(f)
-    for doc in docs:
-        if doc and doc.get("kind") == "ConfigMap" and doc.get("metadata", {}).get("name") == "inferenceservice-config":
-            # Force RawDeployment mode
-            if "deploy" in doc.get("data", {}):
-                deploy_cfg = json.loads(doc["data"]["deploy"])
-                deploy_cfg["defaultDeploymentMode"] = "RawDeployment"
-                doc["data"]["deploy"] = json.dumps(deploy_cfg, indent=4)
+    docs = list(yaml.safe_load_all(f))
 
-            # Patch ingress: disable Istio VirtualService creation and clear ingressClassName
-            # NOTE: gateway fields (ingressGateway, localGateway, etc.) cannot be removed
-            # because KServe validates their presence at startup.
-            if "ingress" in doc.get("data", {}):
-                ingress_cfg = json.loads(doc["data"]["ingress"])
-                ingress_cfg["disableIstioVirtualHost"] = True
-                ingress_cfg["ingressClassName"] = ""
-                ingress_cfg["disableIngressCreation"] = True
-                doc["data"]["ingress"] = json.dumps(ingress_cfg, indent=4)
+for doc in docs:
+    if not doc:
+        output.append(doc); continue
 
-        output.append(doc)
+    kind = doc.get("kind")
+    name = doc.get("metadata", {}).get("name", "")
+
+    if kind == "ConfigMap" and name == "inferenceservice-config":
+        if "deploy" in doc.get("data", {}):
+            deploy_cfg = json.loads(doc["data"]["deploy"])
+            deploy_cfg["defaultDeploymentMode"] = "RawDeployment"
+            doc["data"]["deploy"] = json.dumps(deploy_cfg, indent=4)
+        if "ingress" in doc.get("data", {}):
+            ingress_cfg = json.loads(doc["data"]["ingress"])
+            ingress_cfg["disableIstioVirtualHost"] = True
+            ingress_cfg["ingressClassName"] = ""
+            ingress_cfg["disableIngressCreation"] = True
+            doc["data"]["ingress"] = json.dumps(ingress_cfg, indent=4)
+
+    elif kind == "ClusterRole" and name == "llmisvc-manager-role":
+        rules = doc.setdefault("rules", [])
+        already = any(
+            "apiextensions.k8s.io" in (r.get("apiGroups") or [])
+            and "customresourcedefinitions" in (r.get("resources") or [])
+            for r in rules
+        )
+        if not already:
+            rules.append(CRD_PERMISSION)
+
+    if kind in ("Deployment", "DaemonSet"):
+        for c in doc.get("spec", {}).get("template", {}).get("spec", {}).get("containers", []):
+            pin_image(c)
+
+    output.append(doc)
 
 with open(sys.argv[2], "w") as f:
     yaml.safe_dump_all(output, f)
