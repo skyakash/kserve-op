@@ -4,7 +4,8 @@
 *-kserve-operator-package/
 bundle-*/
 
-# Ignore local KServe source repository clone
+# Ignore local KServe source repository (auto-extracted by generate-kserve-raw.sh from the bundled zip)
+kserve-source/
 kserve-master/
 
 # Local version-comparison workspace (analysis only, not for commit)

@@ -10,15 +10,19 @@ set -e
 
 # Parse arguments
 TARGET_DIR_NAME=""
+ZIP_PATH=""
 
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
         -t|--target) TARGET_DIR_NAME="$2"; shift 2 ;;
-        -c|--clean) TARGET_DIR_NAME="$2"; CLEAN_ONLY=true; shift 2 ;;
+        -z|--zip)    ZIP_PATH="$2"; shift 2 ;;
+        -c|--clean)  TARGET_DIR_NAME="$2"; CLEAN_ONLY=true; shift 2 ;;
         -h|--help)
             echo "Usage: $0 [options]"
             echo "Options:"
             echo "  -t, --target <name>  Target extraction directory name (e.g., c-kserve-raw)"
+            echo "  -z, --zip <path>     Path to KServe source zip (extracted to ./kserve-source/)."
+            echo "                       Required when ./kserve-source/ does not already exist."
             echo "  -c, --clean <name>   Clean the target extraction directory and exit"
             echo "  -h, --help           Display this help message"
             exit 0
@@ -58,13 +62,40 @@ fi
 
 OUTPUT_DIR="${SCRIPT_DIR}/${TARGET_DIR_NAME}"
 
-# We assume kserve-master is heavily cloned right next to this script in the workspace
-KSERVE_SOURCE="${SCRIPT_DIR}/kserve-master"
+# KServe source lives in a generic kserve-source/ directory.
+# If it does not exist, auto-extract it from the zip passed via -z/--zip.
+# The zip is expected to contain a single top-level directory (e.g.
+# kserve-release-0.16/, kserve-master/) which is renamed to kserve-source/.
+KSERVE_SOURCE="${SCRIPT_DIR}/kserve-source"
 
 if [ ! -d "${KSERVE_SOURCE}" ]; then
-    echo "ERROR: Could not find the KServe source repository at ${KSERVE_SOURCE}"
-    echo "Please ensure 'kserve-master' exists in the same directory as this script."
-    exit 1
+    if [ -z "${ZIP_PATH}" ]; then
+        echo "ERROR: ${KSERVE_SOURCE} not found and no -z/--zip <path> provided."
+        echo "Pass --zip pointing to the bundled KServe source zip (e.g. kserve-release-0.16.zip)."
+        exit 1
+    fi
+    if [ ! -f "${ZIP_PATH}" ]; then
+        echo "ERROR: Zip file not found at ${ZIP_PATH}"
+        exit 1
+    fi
+
+    echo "Extracting ${ZIP_PATH} -> ${KSERVE_SOURCE}/ ..."
+    EXTRACT_TMP="${SCRIPT_DIR}/.kserve-source-extract.$$"
+    trap 'rm -rf "${EXTRACT_TMP}"' EXIT
+    mkdir -p "${EXTRACT_TMP}"
+    unzip -q "${ZIP_PATH}" -d "${EXTRACT_TMP}"
+
+    # Expect a single top-level dir inside the zip
+    INNER_COUNT=$(find "${EXTRACT_TMP}" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+    if [ "${INNER_COUNT}" != "1" ]; then
+        echo "ERROR: Expected exactly one top-level directory in ${ZIP_PATH}, found ${INNER_COUNT}."
+        exit 1
+    fi
+    INNER_DIR=$(find "${EXTRACT_TMP}" -mindepth 1 -maxdepth 1 -type d)
+    mv "${INNER_DIR}" "${KSERVE_SOURCE}"
+    rm -rf "${EXTRACT_TMP}"
+    trap - EXIT
+    echo "      Done."
 fi
 
 KUSTOMIZE="kustomize"
@@ -128,15 +159,21 @@ echo "[3/4] Extracting KServe Core & Patching for Raw Mode..."
 mkdir -p "${OUTPUT_DIR}/04-kserve-core"
 
 # To get the core manifests, we build the default Kustomize overlay
-${KUSTOMIZE} build config/default > "${OUTPUT_DIR}/04-kserve-core/kserve-core-temp.yaml"
+CORE_TMP="${OUTPUT_DIR}/04-kserve-core/kserve-core-temp.yaml"
+${KUSTOMIZE} build config/default > "${CORE_TMP}"
 
-# We must explicitly add the configmap baseline because it is not bundled by default
-echo "---" >> "${OUTPUT_DIR}/04-kserve-core/kserve-core-temp.yaml"
-${KUSTOMIZE} build config/configmap >> "${OUTPUT_DIR}/04-kserve-core/kserve-core-temp.yaml"
+# Some KServe versions (master) leave configmap and certmanager OUT of
+# config/default; others (release-0.16+) include them already. Append only
+# if not already present, to avoid duplicate ConfigMaps/Issuers.
+if ! grep -q "^  name: inferenceservice-config$" "${CORE_TMP}"; then
+    echo "---" >> "${CORE_TMP}"
+    ${KUSTOMIZE} build config/configmap >> "${CORE_TMP}"
+fi
 
-# We must explicitly add the selfsigned-issuer because config/default drops it
-echo "---" >> "${OUTPUT_DIR}/04-kserve-core/kserve-core-temp.yaml"
-${KUSTOMIZE} build config/certmanager >> "${OUTPUT_DIR}/04-kserve-core/kserve-core-temp.yaml"
+if ! grep -q "^kind: Issuer$" "${CORE_TMP}"; then
+    echo "---" >> "${CORE_TMP}"
+    ${KUSTOMIZE} build config/certmanager >> "${CORE_TMP}"
+fi
 
 # CRITICAL: We must modify the inferenceservice-config ConfigMap inline to force RawDeployment mode
 # and remove all Istio/KNative references from the ingress config.
@@ -170,9 +207,9 @@ with open(sys.argv[1], "r") as f:
 
 with open(sys.argv[2], "w") as f:
     yaml.safe_dump_all(output, f)
-' "${OUTPUT_DIR}/04-kserve-core/kserve-core-temp.yaml" "${OUTPUT_DIR}/04-kserve-core/kserve-core.yaml"
+' "${CORE_TMP}" "${OUTPUT_DIR}/04-kserve-core/kserve-core.yaml"
 
-rm "${OUTPUT_DIR}/04-kserve-core/kserve-core-temp.yaml"
+rm "${CORE_TMP}"
 echo "      Done."
 
 echo "[4/4] Extracting KServe ClusterServingRuntimes..."

@@ -226,12 +226,14 @@ func rewriteSvcDNSNamespace(dns, targetNS string) string {
 // waitForNamespacePodsReady polls until all pods in the given namespace are Ready,
 // or until the context deadline is exceeded. It retries every 5 seconds and
 // returns an error (prompting the reconciler to requeue) if pods are still not
-// ready after 5 minutes.
+// ready after 10 minutes. The 10-minute window accommodates first-run image
+// pulls across the core controller plus the localmodel and llmisvc deployments
+// that ship as part of recent KServe releases.
 func waitForNamespacePodsReady(ctx context.Context, c client.Client, namespace string) error {
 	logger := log.FromContext(ctx)
 	logger.Info("Waiting for pods to be ready", "namespace", namespace)
 
-	timeout := time.After(5 * time.Minute)
+	timeout := time.After(10 * time.Minute)
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
