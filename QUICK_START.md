@@ -37,8 +37,11 @@ If you are re-running the build (e.g. after a cluster reset), clean both generat
 
 ### Step 1 — Extract KServe raw manifests
 ```bash
-# Run from the kserve-op workspace directory
-./generate-kserve-raw.sh -t p-kserve-raw
+# Run from the kserve-op workspace directory.
+# -z points at the bundled KServe source zip; the script auto-extracts
+# it into ./kserve-source/ (gitignored). After the first run, kserve-source/
+# is reused — -z is only required when the directory doesn't exist.
+./generate-kserve-raw.sh -t p-kserve-raw -z kserve-release-0.16.zip
 ```
 
 ### Step 2 — Generate operator, build image, and create OLM bundle
@@ -339,6 +342,42 @@ curl -s -H "Content-Type: application/json" \
 ✅ Expected: `{"predictions":[1]}`
 
 > **Production note:** Replace `example.com` with your real domain and point DNS to the ingress load balancer IP/hostname. No `/etc/hosts` entry needed in production.
+
+### Step 6c — *(Optional)* Test LocalModelCache (per-node model caching)
+
+`LocalModelCache` pre-fetches a model onto each labeled worker node so InferenceServices start faster and survive without internet egress. The operator package ships sample manifests in `06-sample-model/` for both **online** (gs://) and **air-gapped** (pvc://) variants.
+
+```bash
+# Quick test (requires a multinode cluster — your production cluster, or
+# any local-multinode tool like kind/k3d/minikube --nodes=3 — single-node
+# Docker Desktop cannot exercise per-node placement):
+kubectl label node <worker-1> kserve/localmodel=worker
+kubectl apply -f 06-sample-model/localmodelcache-nodegroup.yaml
+kubectl apply -f 06-sample-model/localmodelcache.yaml
+kubectl wait --for=jsonpath='{.status.copies.available}'=1 \
+  localmodelcache/sklearn-iris-cache --timeout=180s
+kubectl apply -f 06-sample-model/localmodelcache-isvc.yaml
+# Predictor pod will mount the cached PVC (no internet pull at startup).
+```
+
+📖 **Full walkthrough** — prerequisites, dev-cluster chown workaround, online (gs://) and air-gap (Minio/HTTP) options, cleanup, troubleshooting:  
+👉 [extra-docs/LOCAL-MODEL-CACHE-GUIDE.md](extra-docs/LOCAL-MODEL-CACHE-GUIDE.md)
+
+### Step 6d — *(Optional)* Test LLMInferenceService (LLM serving via Gateway API)
+
+`LLMInferenceService` is KServe 0.16's new resource for serving large language models via Gateway API routing. The operator package ships a **smoke-only** sample (placeholder model URI) that validates the controller wiring without requiring real LLM compute.
+
+```bash
+kubectl apply -f 06-sample-model/llmisvc-smoke.yaml
+# Within ~10s, the controller creates:
+kubectl get deploy llmisvc-smoke-kserve          # Deployment (0/1, expected — placeholder model)
+kubectl get svc llmisvc-smoke-kserve-workload-svc  # Service on port 8000
+# The reconcile pipeline (Workload → Router → Scheduler → HTTPRoute) is logged
+# by the llmisvc controller — see GUIDE for the verification commands.
+```
+
+📖 **Full walkthrough** — smoke test, Phase 2 with Gateway API CRDs + real LLM model, sizing:  
+👉 [extra-docs/LLMISVC-GUIDE.md](extra-docs/LLMISVC-GUIDE.md)
 
 ---
 

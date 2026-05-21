@@ -52,12 +52,16 @@ chmod +x generate-kserve-raw.sh
 You can bypass the interactive prompts by supplying the target directory via the `-t` flag. This allows you to run the script headlessly in automated pipelines:
 
 - `-t, --target <name>` : Target extraction directory name (e.g., `c-kserve-raw`)
+- `-z, --zip <path>`    : Path to the bundled KServe source zip (e.g., `kserve-release-0.16.zip`). The script auto-extracts the zip into `./kserve-source/` (gitignored). **Required on the first run** — when `./kserve-source/` does not already exist. Subsequent runs reuse `./kserve-source/` and may omit `-z`.
 - `-c, --clean <name>`  : Clean the target extraction directory and exit
 - `-h, --help`          : Show help message
 
 #### Example
 ```bash
-# Extract KServe manifests into a folder called 'p-kserve-raw'
+# First-time extract (auto-unzips kserve-release-0.16.zip → kserve-source/)
+./generate-kserve-raw.sh -t p-kserve-raw -z kserve-release-0.16.zip
+
+# Subsequent runs (kserve-source/ already exists)
 ./generate-kserve-raw.sh -t p-kserve-raw
 
 # Clean up the generated folder when done
