@@ -1,0 +1,27 @@
+---
+# ClusterIP Service exposing Minio at minio.minio.svc:9000 (S3 API) and
+# :9001 (console). The S3 endpoint URL used by the LocalModelCache
+# download Job is built from this DNS name:
+#   http://minio.minio.svc:9000
+#
+# The console (:9001) is exposed only inside the cluster; reach it with:
+#   kubectl port-forward -n minio svc/minio 9001:9001
+# then browse to http://localhost:9001 (login: minioadmin / minioadmin).
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: minio
+  labels:
+    app: minio
+spec:
+  type: ClusterIP
+  selector:
+    app: minio
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: 9000
+    - name: console
+      port: 9001
+      targetPort: 9001

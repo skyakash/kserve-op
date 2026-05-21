@@ -1,0 +1,11 @@
+---
+# Namespace for the in-cluster S3-compatible object store (Minio) that
+# stands in for an internet-reachable model bucket. This namespace and
+# everything inside it is part of the demo — strip out for production
+# and replace with your own object-store endpoint.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: minio
+  labels:
+    purpose: kserve-airgap-localmodelcache-demo

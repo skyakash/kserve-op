@@ -196,16 +196,38 @@ kubectl create namespace kserve-operator-system  || true
 ### Step 3 — Set up image pull credentials *(skip if images are public)*
 
 ```bash
-# With CLI args:
+# OLM-based deploy (Option A — most users):
 bash setup-credentials.sh --user <registry-user> --pass <registry-token>
 
+# Direct-manifest deploy (Option B — no OLM):
+bash setup-credentials.sh --non-olm --user <registry-user> --pass <registry-token>
+
 # Or interactive (will prompt for username and password):
-bash setup-credentials.sh
+bash setup-credentials.sh           # OLM mode
+bash setup-credentials.sh --non-olm # Option B mode
 ```
 
 For the **customer-registry** flow, pass the **customer-registry** credentials here (the cluster will pull from the customer registry, not the build registry).
 
+> **`--non-olm`** (added for Issue #6): tells the script to skip the `olm` and `operators` namespace checks (and skip creating secrets in them). Use it when you're going to deploy via `kubectl apply -f operator-deployment.yaml` (Option B in Step 4) instead of `operator-sdk run bundle` (Option A). Without `--non-olm`, the pre-flight will fail on a no-OLM cluster because `olm`/`operators` namespaces don't exist.
+
 ### Step 4 — Deploy the operator
+
+KServe Raw Mode supports **three deploy paths**, in increasing order of simplicity:
+
+| | Option A — OLM Bundle | Option B — Direct manifest | Option C — `install.sh` |
+|---|---|---|---|
+| **Who manages the operator?** | OLM (CSV reconciles) | Plain Kubernetes Deployment | No operator at all — pure `kubectl apply` |
+| **Cluster prereqs** | cert-manager + OLM + 4 namespaces (`olm`, `operators`, `kserve-operator-system`, `<KServe ns>`) | cert-manager + 2 namespaces (`kserve-operator-system`, `<KServe ns>`) | cert-manager only |
+| **Pull-secret command** | `setup-credentials.sh` | `setup-credentials.sh --non-olm` | N/A (manifests reference no private images by default) |
+| **Custom KServe namespace** | yes — `--install-mode SingleNamespace=<name>` | currently bundled defaults only | yes — `KSERVE_NAMESPACE=<name> ./install.sh` |
+| **CR + auto-init** | yes (operator runs in cluster) | yes | no — operator is not deployed; KServe runs directly |
+| **Customer-facing complexity** | high (OLM concepts) | medium | low (one script, one CR-less install) |
+| **Best for** | production multi-tenant clusters with OLM already adopted | private-registry environments without OLM | dev clusters, customer demos, the simplest possible deploy |
+| **Steps to run** | 1 → 2 → 3 → 4A → 5 → 6 | 1 (skip OLM portions) → 2 → 3 (`--non-olm`) → 4B → 5 → 6 | 0 (cert-manager) → run `install.sh` → 6 |
+| **Tested by** | T01, T05, T10, T11, T12 | T04 | T02, T03-RETEST |
+
+If you don't have a strong preference, **start with Option C** — it's the fewest moving parts and works on any cluster.
 
 **Option A: OLM Bundle (recommended, `InstallMode: SingleNamespace`)**
 
@@ -237,17 +259,38 @@ operator-sdk run bundle "${BUNDLE_IMAGE}" \
 
 > **Customer registry flow:** If you generated with `--customer-registry`, the package contains `mirror-images.sh` and `deploy-bundle.sh`. Run `mirror-images.sh` first to push images to the customer registry, then `deploy-bundle.sh` — it handles the bundle image reference automatically.
 
-**Option B: Direct manifests (no OLM needed — skip Steps 1 and 4)**
+**Option B: Direct manifests (no OLM needed — skip Step 1, and pass `--non-olm` in Step 3)**
 ```bash
+# Prereq for Option B: Step 3 must have been run with --non-olm (so the pull secret
+# is in kserve-operator-system without requiring olm/operators namespaces).
 kubectl apply -f operator-deployment.yaml
 # Note: direct deploy uses the bundled defaults (kserve-operator-system + kserve).
-# To use a custom KServe namespace name without OLM, use the standalone install.sh
-# in p-kserve-raw with KSERVE_NAMESPACE=<your-name> set in the env.
 ```
 
-> **Auto-Init:** The operator automatically creates a default `KServeRawMode` CR on startup, in the namespace named in the OperatorGroup's `targetNamespaces`. KServe installation begins immediately — no manual `kubectl apply -f kserve-rawmode.yaml` required.
+**Option C: `install.sh` (no operator, no OLM — pure `kubectl apply` orchestrated by a shell script)**
 
-### Step 5 — Watch installation progress
+Use this when you don't need the operator's lifecycle management — `install.sh` applies the KServe manifests directly. Simplest path. Skip Steps 1, 2, 3 and 4A/4B entirely; run `install.sh` straight after Step 0 (cert-manager).
+
+Host prerequisites for `install.sh`:
+- `cert-manager` installed in the cluster (see Step 0)
+- `python3` + `PyYAML` on the machine running the script (it does a structured YAML rewrite of namespace references — verify with `python3 -c 'import yaml'`)
+
+```bash
+# Generate the standalone deployment package (one-time):
+./generate-kserve-raw.sh -t p-kserve-raw -z kserve-release-0.16.zip
+
+# Default — install into "kserve" namespace
+cd p-kserve-raw && bash install.sh
+
+# Or pick a custom namespace name
+cd p-kserve-raw && KSERVE_NAMESPACE=my-kserve bash install.sh
+```
+
+`install.sh` walks through CRDs → RBAC → core controllers → ClusterServingRuntimes in order with the right waits. After it returns, jump straight to **Step 6** (deploy an iris ISVC). Steps 5 (watching CR phases) does not apply — there is no `KServeRawMode` CR in this path. See `p-kserve-raw/README.md` for full details and the prereq install commands.
+
+> **Auto-Init (Option A + Option B only):** The operator automatically creates a default `KServeRawMode` CR on startup, in the namespace named in the OperatorGroup's `targetNamespaces`. KServe installation begins immediately — no manual `kubectl apply -f kserve-rawmode.yaml` required. (Option C has no operator and no CR — the install is direct.)
+
+### Step 5 — Watch installation progress *(Options A + B only — skip for Option C)*
 ```bash
 kubectl get kserverawmode -A -w
 ```
@@ -261,6 +304,28 @@ kserve      kserve-rawmode   InstallingCore           11s
 kserve      kserve-rawmode   InstallingRuntimes       38s
 kserve      kserve-rawmode   Ready                    43s
 ```
+
+Once the CR is `Ready`, the steady-state pod set in the KServe namespace looks like this:
+
+```bash
+kubectl get pods -n kserve
+```
+```
+NAME                                                    READY   STATUS    RESTARTS   AGE
+kserve-controller-manager-<rand>                        2/2     Running   0          90s
+kserve-localmodel-controller-manager-<rand>             1/1     Running   0          90s
+llmisvc-controller-manager-<rand>                       1/1     Running   0          90s
+```
+
+```bash
+kubectl get ds -n kserve
+```
+```
+NAME                          DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR              AGE
+kserve-localmodelnode-agent   0         0         0       0            0           kserve/localmodel=worker   90s
+```
+
+> **DaemonSet `DESIRED=0` is expected on a fresh install.** The `kserve-localmodelnode-agent` DaemonSet uses a `nodeSelector: kserve/localmodel=worker`. Until you opt nodes in (`kubectl label node <worker> kserve/localmodel=worker`), no node matches and the DaemonSet correctly schedules zero pods. This is **not a failure** — it's a feature: it lets you keep the LocalModelCache subsystem inert on clusters where you don't need per-node model caching. Once you label nodes, the DaemonSet scales up automatically. See [`extra-docs/LOCAL-MODEL-CACHE-GUIDE.md`](extra-docs/LOCAL-MODEL-CACHE-GUIDE.md) for the labeling step.
 
 If cert-manager is missing, the phase will show `CertManagerNotFound` and the operator logs will display:
 ```

@@ -1,0 +1,22 @@
+---
+# InferenceService consuming the air-gapped LocalModelCache.
+#
+# The `storageUri` MUST exactly match the LocalModelCache's `sourceModelUri`.
+# That's the contract that triggers the KServe defaults webhook to rewrite
+# the predictor's storage to `pvc://<cache-pvc>/...` instead of fetching
+# from s3:// at predictor-pod startup. (See kserve-source/pkg/webhook/
+# admission/pod/storage_initializer_injector.go:542-552.)
+#
+# Once the LocalModelCache reaches NodeDownloaded on both workers, this
+# ISVC's predictor pod will start in seconds and never talk to Minio
+# directly — it mounts the cache PVC instead.
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: sklearn-iris-cached-airgap
+  annotations:
+    serving.kserve.io/deploymentMode: RawDeployment
+spec:
+  predictor:
+    sklearn:
+      storageUri: s3://models/sklearn/iris/1.0/model.joblib

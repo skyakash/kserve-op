@@ -388,11 +388,18 @@ fi
 if [ "$MULTI_PLATFORM" != true ] && [[ "$BUILD_CHOICE" =~ ^[Yy]$ || "$AUTO_PUSH" = true ]]; then
     if [ "$AUTO_PUSH" = true ]; then
         PUSH_CHOICE="y"
+    elif [ "$AUTO_BUILD" = true ]; then
+        # -b was given without -p. Non-interactive run — skip push silently,
+        # don't try to read from a potentially closed stdin. (Fixes Issue #8:
+        # the previous `read -p` here returned non-zero on non-TTY stdin and
+        # set -e killed the script before the OLM-bundle block could run.)
+        PUSH_CHOICE="n"
+        echo "Skipping image push (pass -p to push automatically)."
     else
         echo ""
         read -p "Do you want to PUSH the image '${IMAGE_TAG}' to the registry? [y/N]: " PUSH_CHOICE
     fi
-    
+
     if [[ "$PUSH_CHOICE" =~ ^[Yy]$ ]]; then
         echo "Running 'make docker-push IMG=${IMAGE_TAG}'..."
         if ! make docker-push IMG="${IMAGE_TAG}"; then
@@ -820,14 +827,31 @@ DOCKER_SERVER="docker.io"
 DOCKER_USERNAME=""
 DOCKER_PASSWORD=""
 SYSTEM_NS="__SYSTEM_NS__"
+NON_OLM=false   # set by --non-olm for Option B (direct manifest deploy, no OLM)
 
 # Parse CLI args
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --user)   DOCKER_USERNAME="$2"; shift 2 ;;
-        --pass)   DOCKER_PASSWORD="$2"; shift 2 ;;
-        --server) DOCKER_SERVER="$2"; shift 2 ;;
-        *) echo "Unknown arg: $1"; exit 1 ;;
+        --user)    DOCKER_USERNAME="$2"; shift 2 ;;
+        --pass)    DOCKER_PASSWORD="$2"; shift 2 ;;
+        --server)  DOCKER_SERVER="$2"; shift 2 ;;
+        --non-olm) NON_OLM=true; shift ;;
+        -h|--help)
+            cat <<'USAGE'
+Usage: bash setup-credentials.sh [OPTIONS]
+
+OPTIONS:
+  --user <username>      Registry username (prompts if not given)
+  --pass <password>      Registry password/token (prompts if not given)
+  --server <registry>    Registry host (default: docker.io)
+  --non-olm              Skip OLM-namespace checks. Use this when deploying
+                         via direct manifest (Option B in QUICK_START.md
+                         Step 4) — the script only creates secrets in
+                         'default' + the operator's system namespace.
+  -h, --help             Show this help and exit
+USAGE
+            exit 0 ;;
+        *) echo "Unknown arg: $1"; echo "Try: bash setup-credentials.sh --help"; exit 1 ;;
     esac
 done
 
@@ -853,8 +877,14 @@ fi
 # 2. Each namespace where this script will create a pull secret must already exist.
 #    kubectl create secret cannot create the namespace as a side effect, so
 #    missing namespaces would be silently skipped and cause confusing pull
-#    failures later.
-for ns in "${SYSTEM_NS}" olm operators; do
+#    failures later. In --non-olm mode (Option B), only the operator's home
+#    namespace is required; the olm/operators namespaces don't exist by design.
+if [ "${NON_OLM}" = true ]; then
+    PREFLIGHT_NS=("${SYSTEM_NS}")
+else
+    PREFLIGHT_NS=("${SYSTEM_NS}" olm operators)
+fi
+for ns in "${PREFLIGHT_NS[@]}"; do
     if ! kubectl get ns "${ns}" >/dev/null 2>&1; then
         MISSING+=("namespace '${ns}' — required to create the pull secret in")
     fi
@@ -873,9 +903,11 @@ if [ "${#MISSING[@]}" -gt 0 ]; then
     echo "   kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.17.2/cert-manager.yaml"
     echo "   kubectl wait --for=condition=Ready pods --all -n cert-manager --timeout=180s"
     echo ""
-    echo "   # OLM (creates olm + operators namespaces):"
-    echo "   operator-sdk olm install"
-    echo ""
+    if [ "${NON_OLM}" != true ]; then
+        echo "   # OLM (creates olm + operators namespaces):"
+        echo "   operator-sdk olm install"
+        echo ""
+    fi
     echo "   # Operator pod's home namespace (always required):"
     echo "   kubectl create namespace ${SYSTEM_NS}"
     echo ""
@@ -886,8 +918,10 @@ fi
 
 echo "   ✅ cert-manager CRD registered"
 echo "   ✅ namespace '${SYSTEM_NS}' exists"
-echo "   ✅ namespace 'olm' exists"
-echo "   ✅ namespace 'operators' exists"
+if [ "${NON_OLM}" != true ]; then
+    echo "   ✅ namespace 'olm' exists"
+    echo "   ✅ namespace 'operators' exists"
+fi
 echo ""
 
 create_secret() {
@@ -903,19 +937,29 @@ create_secret() {
 
 create_secret default
 create_secret "${SYSTEM_NS}"
-create_secret olm
-create_secret operators
+if [ "${NON_OLM}" != true ]; then
+    create_secret olm
+    create_secret operators
+fi
 
 echo ""
-echo "✅ Pull secret '${SECRET_NAME}' created in: default, ${SYSTEM_NS}, olm, operators."
+if [ "${NON_OLM}" = true ]; then
+    echo "✅ Pull secret '${SECRET_NAME}' created in: default, ${SYSTEM_NS} (Option B mode — OLM namespaces skipped)."
+else
+    echo "✅ Pull secret '${SECRET_NAME}' created in: default, ${SYSTEM_NS}, olm, operators."
+fi
 echo ""
 echo "Next: deploy the operator (Step 4 in QUICK_START.md):"
-echo "   bash deploy-bundle.sh ${SECRET_NAME}      # interactive helper (only if --customer-registry was used)"
-echo "   # ─ or ─"
-echo "   operator-sdk run bundle <bundle-image> \\"
-echo "       --namespace ${SYSTEM_NS} \\"
-echo "       --install-mode SingleNamespace=<your-kserve-ns> \\"
-echo "       --pull-secret-name ${SECRET_NAME}"
+if [ "${NON_OLM}" = true ]; then
+    echo "   kubectl apply -f operator-deployment.yaml   # Option B — direct manifest deploy"
+else
+    echo "   bash deploy-bundle.sh ${SECRET_NAME}      # interactive helper (only if --customer-registry was used)"
+    echo "   # ─ or ─"
+    echo "   operator-sdk run bundle <bundle-image> \\"
+    echo "       --namespace ${SYSTEM_NS} \\"
+    echo "       --install-mode SingleNamespace=<your-kserve-ns> \\"
+    echo "       --pull-secret-name ${SECRET_NAME}"
+fi
 CREDS_EOF
 # Inject generator-time values (secret name, system namespace)
 if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -1007,6 +1051,43 @@ print(json.dumps(cm))
 echo "Restarting kserve-controller-manager..."
 kubectl rollout restart deployment kserve-controller-manager -n "${KSERVE_NS}" >/dev/null
 kubectl wait --for=condition=Ready pods -l control-plane=kserve-controller-manager -n "${KSERVE_NS}" --timeout=120s
+
+# Webhook race workaround (closes Issue #7 from extra-docs/0.16-test-report.md):
+# kubectl wait Ready flips on the controller pod's HTTP /healthz probe (port 8081),
+# but the webhook HTTPS server on port 9443 takes several seconds longer to start
+# listening. A kubectl apply of an InferenceService in that window fails with
+# "context deadline exceeded" from the defaulting webhook. We probe the webhook
+# Service's TLS endpoint directly from inside the cluster (via an ephemeral curl
+# Pod) until it answers, with a bounded timeout. --insecure because the cert is
+# self-signed by cert-manager; we're proving TLS-handshake completes, not
+# verifying identity.
+echo "Probing webhook TLS endpoint..."
+PROBE_NAME="kserve-webhook-probe-$$"
+if ! kubectl run -n "${KSERVE_NS}" "${PROBE_NAME}" \
+        --image=curlimages/curl:8.10.1 \
+        --restart=Never \
+        --quiet \
+        --attach \
+        --rm \
+        --image-pull-policy=IfNotPresent \
+        --command -- sh -c '
+            set -eu
+            for i in $(seq 1 30); do
+                if curl --silent --insecure --output /dev/null \
+                        --max-time 3 \
+                        https://kserve-webhook-server-service:443/ ; then
+                    echo "  webhook responsive after attempt ${i}/30"
+                    exit 0
+                fi
+                sleep 2
+            done
+            echo "  ERROR: webhook did not respond to 30 probes over ~60 seconds" >&2
+            exit 1
+        ' ; then
+    echo "❌ Webhook is not responsive after rollout. Re-run enable-ingress.sh, or"
+    echo "   inspect: kubectl logs -n ${KSERVE_NS} deploy/kserve-controller-manager"
+    exit 1
+fi
 
 echo ""
 echo "✅ KServe Ingress creation enabled (class: ${INGRESS_CLASS}, ns: ${KSERVE_NS})."

@@ -2,7 +2,9 @@
 
 This standalone directory contains all the manifests required to install **KServe configured for Raw Deployment Mode**, ensuring that InferenceServices deploy as standard Kubernetes Deployments/Services (no Knative or Istio required).
 
-## Prerequisite: cert-manager
+## Prerequisites
+
+### cert-manager (cluster prerequisite)
 
 KServe webhooks require [cert-manager](https://cert-manager.io/) for TLS certificate provisioning. It is **not bundled** with this package — install it on the cluster yourself before running the installer.
 
@@ -17,7 +19,21 @@ Verify:
 kubectl get crds | grep cert-manager.io
 ```
 
-The installer (`install.sh`) checks for cert-manager and exits with a clear error if it is missing.
+### python3 + PyYAML (host prerequisite for `install.sh`)
+
+`install.sh` performs a structured YAML rewrite of namespace references (so any custom `KSERVE_NAMESPACE` is propagated to certificate dnsNames, webhook clientConfig, RoleBinding subjects, and cert-manager `inject-ca-from` annotations). This requires Python 3 with the `PyYAML` module available on the machine running the installer.
+
+```bash
+# Verify
+python3 -c 'import yaml; print(yaml.__version__)'
+
+# Install if missing (any one of)
+pip3 install --user PyYAML
+python3 -m pip install --user PyYAML
+brew install pyyaml          # macOS Homebrew
+```
+
+The installer (`install.sh`) checks for both cert-manager and python3+PyYAML and exits with a clear error if either is missing.
 
 ## Directory Structure
 
@@ -30,8 +46,8 @@ The installer (`install.sh`) checks for cert-manager and exits with a clear erro
 5. `06-sample-model`: Sample manifests for testing. The directory contains:
    - `sklearn-iris.yaml` — standard iris InferenceService (online `gs://` storage).
    - `iris-input.json` — payload for the curl-based test.
-   - `localmodelcache-nodegroup.yaml`, `localmodelcache.yaml`, `localmodelcache-isvc.yaml` — **online LocalModelCache flow** (per-node model caching, gs:// source). See the GUIDE.
-   - `localmodelcache-offline-source-pvc.yaml`, `localmodelcache-offline.yaml`, `localmodelcache-offline-isvc.yaml` — **air-gapped LocalModelCache flow** (pvc:// source). See the GUIDE.
+   - `localmodelcache-nodegroup.yaml`, `localmodelcache.yaml`, `localmodelcache-isvc.yaml` — **online LocalModelCache flow** (per-node model caching, `gs://` source). See the GUIDE.
+   - `airgap-localmodelcache/` — **air-gapped LocalModelCache flow** (in-cluster Minio + `s3://` source). Self-contained sub-directory with its own README and 9-step apply order. See the GUIDE for the explainer.
    - `llmisvc-smoke.yaml` — **LLMInferenceService** smoke test (validates the controller wiring; no real LLM compute). See the GUIDE.
 6. `install.sh`: An automated deployment script handling the webhook sleep sequences.
 
@@ -57,7 +73,7 @@ KSERVE_NAMESPACE=my-kserve ./install.sh
 ```
 
 ### Manual Installation
-If applying manually, you must follow this exact order and wait for the pods in the previous step to become `Ready` before proceeding. The bundled manifests have `namespace: kserve` baked in — for a different namespace name, pipe each through `sed` to rewrite (or just run `./install.sh` which handles this automatically).
+If applying manually, you must follow this exact order and wait for the pods in the previous step to become `Ready` before proceeding. The bundled manifests have `namespace: kserve` baked in — for a different namespace name, run `./install.sh` (which performs a structured YAML rewrite covering certificate dnsNames, webhook clientConfig, RoleBinding subjects, and cert-manager `inject-ca-from` annotations — a plain `sed` pass is not sufficient).
 ```bash
 kubectl apply --server-side -f 02-kserve-crds/kserve-crds.yaml
 kubectl apply -f 03-kserve-rbac/kserve-rbac.yaml

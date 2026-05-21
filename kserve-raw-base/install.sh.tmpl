@@ -21,15 +21,113 @@ if ! kubectl get crd certificates.cert-manager.io >/dev/null 2>&1; then
 fi
 echo "      cert-manager detected."
 
+# Pre-flight: python3 + PyYAML are required by rewrite_ns() to do a
+# structured namespace rewrite. Fail fast here so we never get halfway
+# through a kubectl apply with a missing dep.
+echo "Pre-flight: checking python3 + PyYAML..."
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "ERROR: python3 is required but not found on PATH."
+    echo "       Install Python 3.8+ before re-running this script."
+    exit 1
+fi
+if ! python3 -c 'import yaml' >/dev/null 2>&1; then
+    echo "ERROR: Python 'PyYAML' module is required but not importable."
+    echo "       Install it with one of:"
+    echo "         pip3 install --user PyYAML"
+    echo "         python3 -m pip install --user PyYAML"
+    echo "         (macOS Homebrew) brew install pyyaml"
+    exit 1
+fi
+echo "      python3 + PyYAML detected."
+
 echo "Target namespace: ${KSERVE_NAMESPACE}"
 
-# rewrite_ns rewrites every "kserve" namespace reference in a manifest
-# stream to ${KSERVE_NAMESPACE}. The regex is anchored to leading
-# whitespace + line end so identifiers like "kserve-controller-manager"
-# and image refs like "kserve/agent:latest" are NOT touched. Only YAML
-# fields whose value is exactly "kserve" (the baked placeholder) match.
+# rewrite_ns rewrites every "kserve" namespace reference in a YAML manifest
+# stream to ${KSERVE_NAMESPACE}. Mirrors the operator's structured
+# rewriteEmbeddedNamespaceRefs() in apply.go — only fields that semantically
+# hold a namespace name are touched; identifiers and image refs are not.
+#
+# Categories (must match apply.go's set exactly):
+#   - metadata.namespace == "kserve"
+#   - cert-manager.io/inject-ca-from annotation ("<ns>/<cert>")
+#   - (Cluster)RoleBinding subjects[].namespace
+#   - (Mutating|Validating)WebhookConfiguration webhooks[].clientConfig.service.namespace
+#   - Certificate spec.commonName + spec.dnsNames[]  (DNS pattern <svc>.<ns>.svc[.cluster.local])
 rewrite_ns() {
-    sed "s|^\([[:space:]]*\)namespace: kserve\$|\1namespace: ${KSERVE_NAMESPACE}|"
+    # Python source is passed via -c "$(cat <<'PY_EOF'...PY_EOF)" so the
+    # heredoc becomes a string argument; the YAML stream we want to rewrite
+    # stays on stdin for python3 to read.
+    KSERVE_TARGET_NS="${KSERVE_NAMESPACE}" python3 -c "$(cat <<'PY_EOF'
+import os, sys, yaml
+
+BAKED  = "kserve"
+TARGET = os.environ["KSERVE_TARGET_NS"]
+
+def rewrite_svc_dns(s):
+    if not isinstance(s, str):
+        return s
+    parts = s.split(".")
+    if len(parts) < 3 or parts[1] != BAKED or parts[2] != "svc":
+        return s
+    parts[1] = TARGET
+    return ".".join(parts)
+
+def rewrite_doc(doc):
+    if not isinstance(doc, dict):
+        return doc
+
+    meta = doc.get("metadata") or {}
+    if meta.get("namespace") == BAKED:
+        meta["namespace"] = TARGET
+        doc["metadata"] = meta
+
+    annos = meta.get("annotations") or {}
+    v = annos.get("cert-manager.io/inject-ca-from")
+    if isinstance(v, str) and "/" in v:
+        ns, _, cert = v.partition("/")
+        if ns == BAKED:
+            annos["cert-manager.io/inject-ca-from"] = TARGET + "/" + cert
+            meta["annotations"] = annos
+            doc["metadata"] = meta
+
+    kind = doc.get("kind")
+
+    if kind in ("ClusterRoleBinding", "RoleBinding"):
+        for subj in doc.get("subjects") or []:
+            if isinstance(subj, dict) and subj.get("namespace") == BAKED:
+                subj["namespace"] = TARGET
+
+    elif kind in ("MutatingWebhookConfiguration", "ValidatingWebhookConfiguration"):
+        for wh in doc.get("webhooks") or []:
+            if not isinstance(wh, dict):
+                continue
+            svc = ((wh.get("clientConfig") or {}).get("service")) or {}
+            if svc.get("namespace") == BAKED:
+                svc["namespace"] = TARGET
+
+    elif kind == "Certificate":
+        spec = doc.get("spec") or {}
+        cn = spec.get("commonName")
+        if isinstance(cn, str):
+            spec["commonName"] = rewrite_svc_dns(cn)
+        dns = spec.get("dnsNames")
+        if isinstance(dns, list):
+            spec["dnsNames"] = [rewrite_svc_dns(x) for x in dns]
+        doc["spec"] = spec
+
+    return doc
+
+# Short-circuit when target == baked: pass stdin through byte-for-byte.
+# Guarantees the default-namespace flow remains untouched.
+if TARGET == BAKED:
+    sys.stdout.write(sys.stdin.read())
+    sys.exit(0)
+
+docs = list(yaml.safe_load_all(sys.stdin))
+out  = [rewrite_doc(d) for d in docs if d is not None]
+yaml.safe_dump_all(out, sys.stdout, default_flow_style=False, sort_keys=False)
+PY_EOF
+)"
 }
 
 echo "1. Installing KServe CRDs..."

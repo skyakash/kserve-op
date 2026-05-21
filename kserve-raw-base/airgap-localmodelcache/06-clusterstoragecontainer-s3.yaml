@@ -1,0 +1,55 @@
+---
+# THE critical piece for air-gap LocalModelCache on KServe v0.16.0.
+#
+# Without this CR, the localmodelnode controller falls back to a bare
+# default container (image only, no env, no creds) and the download Job
+# cannot authenticate to Minio. The controller's selection logic lives at
+# kserve-source/pkg/controller/v1alpha1/localmodelnode/controller.go:175-203:
+# it iterates ClusterStorageContainer instances and picks one whose
+# `workloadType=localModelDownloadJob` matches AND whose `supportedUriFormats`
+# prefix matches the LocalModelCache's `sourceModelUri`.
+#
+# The container image and env block here become the spec of the download
+# Job pod created per (LocalModelCache × node).
+apiVersion: serving.kserve.io/v1alpha1
+kind: ClusterStorageContainer
+metadata:
+  name: s3-airgap-localmodel
+spec:
+  workloadType: localModelDownloadJob
+  supportedUriFormats:
+    - prefix: "s3://"
+  container:
+    name: kserve-localmodel-download
+    # Pin to the matching KServe release. Mirror this tag into your
+    # customer registry alongside the operator images for air-gap.
+    image: kserve/storage-initializer:v0.16.0
+    env:
+      # AWS SDK credentials — loaded from the Secret in
+      # kserve-localmodel-jobs namespace (see 05-localmodel-s3-credentials.yaml)
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: minio-s3-credentials
+            key: AWS_ACCESS_KEY_ID
+      - name: AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: minio-s3-credentials
+            key: AWS_SECRET_ACCESS_KEY
+      # Point the SDK at in-cluster Minio. The KServe storage-initializer
+      # reads AWS_ENDPOINT_URL (see kserve-source/pkg/agent/storage/utils.go:232).
+      - name: AWS_ENDPOINT_URL
+        value: "http://minio.minio.svc:9000"
+      # Minio runs HTTP-only in this demo — disable TLS / SSL verification.
+      - name: S3_USE_HTTPS
+        value: "0"
+      - name: S3_VERIFY_SSL
+        value: "0"
+      # path-style addressing — required for Minio (which doesn't do
+      # virtual-host-style bucket DNS).
+      - name: AWS_S3_FORCE_PATH_STYLE
+        value: "true"
+      - name: AWS_DEFAULT_REGION
+        value: "us-east-1"
+    terminationMessagePolicy: FallbackToLogsOnError

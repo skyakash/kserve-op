@@ -358,16 +358,19 @@ echo "      Generated sklearn-iris.yaml and iris-input.json."
 # introduced in 0.16. Requires at least one node labeled
 # kserve/localmodel=worker so the agent DaemonSet can schedule there.
 # Two flavours generated:
-#   * Online: sourceModelUri is gs:// (needs internet egress)
-#   * Offline: sourceModelUri is pvc:// referencing a pre-populated PVC
-#     (air-gap friendly; user side-loads the model into the source PVC).
+#   * Online: sourceModelUri is gs:// (needs internet egress at download
+#     time only — predictor pods read from the cache PVC afterwards).
+#   * Air-gapped (s3://): a self-contained Minio-backed recipe under the
+#     airgap-localmodelcache/ subdirectory — see its README for the full
+#     apply walkthrough. The previous pvc://-based "offline" samples were
+#     removed because KServe v0.16.0's LocalModelCache download path does
+#     NOT support pvc:// (only s3://, gs://, http(s)://, abfs://).
 cp "${SCRIPT_DIR}/kserve-raw-base/localmodelcache-nodegroup-sample.yaml.tmpl"           "${OUTPUT_DIR}/06-sample-model/localmodelcache-nodegroup.yaml"
 cp "${SCRIPT_DIR}/kserve-raw-base/localmodelcache-sample.yaml.tmpl"                     "${OUTPUT_DIR}/06-sample-model/localmodelcache.yaml"
 cp "${SCRIPT_DIR}/kserve-raw-base/localmodelcache-isvc-sample.yaml.tmpl"                "${OUTPUT_DIR}/06-sample-model/localmodelcache-isvc.yaml"
-cp "${SCRIPT_DIR}/kserve-raw-base/localmodelcache-offline-source-pvc-sample.yaml.tmpl"  "${OUTPUT_DIR}/06-sample-model/localmodelcache-offline-source-pvc.yaml"
-cp "${SCRIPT_DIR}/kserve-raw-base/localmodelcache-offline-sample.yaml.tmpl"             "${OUTPUT_DIR}/06-sample-model/localmodelcache-offline.yaml"
-cp "${SCRIPT_DIR}/kserve-raw-base/localmodelcache-offline-isvc-sample.yaml.tmpl"        "${OUTPUT_DIR}/06-sample-model/localmodelcache-offline-isvc.yaml"
-echo "      Generated localmodelcache (online + offline) sample manifests."
+cp "${SCRIPT_DIR}/kserve-raw-base/chown-hostpath-helper-sample.yaml.tmpl"               "${OUTPUT_DIR}/06-sample-model/chown-hostpath-helper.yaml"
+cp -R "${SCRIPT_DIR}/kserve-raw-base/airgap-localmodelcache"                            "${OUTPUT_DIR}/06-sample-model/airgap-localmodelcache"
+echo "      Generated localmodelcache (online + airgap) sample manifests."
 
 # llmisvc smoke-test sample — minimal LLMInferenceService that exercises
 # the llmisvc-controller-manager's reconcile path (Deployment + Service
