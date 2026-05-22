@@ -827,7 +827,6 @@ DOCKER_SERVER="docker.io"
 DOCKER_USERNAME=""
 DOCKER_PASSWORD=""
 SYSTEM_NS="__SYSTEM_NS__"
-NON_OLM=false   # set by --non-olm for Option B (direct manifest deploy, no OLM)
 
 # Parse CLI args
 while [[ $# -gt 0 ]]; do
@@ -835,7 +834,14 @@ while [[ $# -gt 0 ]]; do
         --user)    DOCKER_USERNAME="$2"; shift 2 ;;
         --pass)    DOCKER_PASSWORD="$2"; shift 2 ;;
         --server)  DOCKER_SERVER="$2"; shift 2 ;;
-        --non-olm) NON_OLM=true; shift ;;
+        --non-olm)
+            # DEPRECATED: kept as a silent no-op for backwards compatibility.
+            # The script's behavior is now identical for both OLM and direct-manifest
+            # deploys: creates pull secrets only in 'default' + the operator's system
+            # namespace. The olm/operators namespaces are OLM infrastructure (not
+            # ours) and never needed pull secrets — that was a defensive overshoot
+            # in earlier versions. Safe to drop --non-olm from invocations.
+            shift ;;
         -h|--help)
             cat <<'USAGE'
 Usage: bash setup-credentials.sh [OPTIONS]
@@ -844,11 +850,22 @@ OPTIONS:
   --user <username>      Registry username (prompts if not given)
   --pass <password>      Registry password/token (prompts if not given)
   --server <registry>    Registry host (default: docker.io)
-  --non-olm              Skip OLM-namespace checks. Use this when deploying
-                         via direct manifest (Option B in QUICK_START.md
-                         Step 4) — the script only creates secrets in
-                         'default' + the operator's system namespace.
   -h, --help             Show this help and exit
+
+DEPRECATED FLAGS (silently ignored, kept for backwards compatibility):
+  --non-olm              No longer needed. The script now always creates
+                         pull secrets in just two namespaces:
+                         'default' + the operator's system namespace.
+                         OLM's own namespaces ('olm', 'operators') are
+                         infrastructure that never needed our pull secrets.
+
+NAMESPACES WHERE SECRETS GET CREATED:
+  default                — sample workloads (iris ISVC) live here
+  <system-ns>            — operator pod + OLM CatalogSource pod for the bundle
+
+If you use a private KServe-image registry (rare), also create the secret
+in your KServe target namespace yourself:
+  kubectl create secret docker-registry <name> --namespace <kserve-ns> ...
 USAGE
             exit 0 ;;
         *) echo "Unknown arg: $1"; echo "Try: bash setup-credentials.sh --help"; exit 1 ;;
@@ -865,6 +882,10 @@ fi
 
 # Pre-flight: validate required cluster prerequisites BEFORE creating any secrets.
 # Fails fast with a clear list of what's missing so the user can fix and re-run.
+#
+# Design C (per architecture-namespaces.md): our footprint is 2 namespaces
+# regardless of deploy path. 'olm' and 'operators' are OLM infrastructure created
+# by `operator-sdk olm install` — we don't touch them.
 echo "Pre-flight checks..."
 MISSING=()
 
@@ -874,21 +895,11 @@ if ! kubectl get crd certificates.cert-manager.io >/dev/null 2>&1; then
     MISSING+=("cert-manager — CRD certificates.cert-manager.io not registered")
 fi
 
-# 2. Each namespace where this script will create a pull secret must already exist.
-#    kubectl create secret cannot create the namespace as a side effect, so
-#    missing namespaces would be silently skipped and cause confusing pull
-#    failures later. In --non-olm mode (Option B), only the operator's home
-#    namespace is required; the olm/operators namespaces don't exist by design.
-if [ "${NON_OLM}" = true ]; then
-    PREFLIGHT_NS=("${SYSTEM_NS}")
-else
-    PREFLIGHT_NS=("${SYSTEM_NS}" olm operators)
+# 2. The operator's system namespace must already exist so kubectl create secret
+#    has a target. ('default' is always present.)
+if ! kubectl get ns "${SYSTEM_NS}" >/dev/null 2>&1; then
+    MISSING+=("namespace '${SYSTEM_NS}' — required to create the pull secret in")
 fi
-for ns in "${PREFLIGHT_NS[@]}"; do
-    if ! kubectl get ns "${ns}" >/dev/null 2>&1; then
-        MISSING+=("namespace '${ns}' — required to create the pull secret in")
-    fi
-done
 
 if [ "${#MISSING[@]}" -gt 0 ]; then
     echo ""
@@ -903,25 +914,19 @@ if [ "${#MISSING[@]}" -gt 0 ]; then
     echo "   kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.17.2/cert-manager.yaml"
     echo "   kubectl wait --for=condition=Ready pods --all -n cert-manager --timeout=180s"
     echo ""
-    if [ "${NON_OLM}" != true ]; then
-        echo "   # OLM (creates olm + operators namespaces):"
-        echo "   operator-sdk olm install"
-        echo ""
-    fi
     echo "   # Operator pod's home namespace (always required):"
     echo "   kubectl create namespace ${SYSTEM_NS}"
     echo ""
     echo "   # KServe target namespace (where the CR + KServe runtime will live):"
     echo "   kubectl create namespace kserve   # or your custom name (e.g. my-kserve)"
+    echo ""
+    echo "   # If using OLM (Option A in QUICK_START.md Step 4):"
+    echo "   operator-sdk olm install   # creates 'olm' + 'operators' ns automatically"
     exit 1
 fi
 
 echo "   ✅ cert-manager CRD registered"
 echo "   ✅ namespace '${SYSTEM_NS}' exists"
-if [ "${NON_OLM}" != true ]; then
-    echo "   ✅ namespace 'olm' exists"
-    echo "   ✅ namespace 'operators' exists"
-fi
 echo ""
 
 create_secret() {
@@ -935,31 +940,26 @@ create_secret() {
         --dry-run=client -o yaml | kubectl apply -f -
 }
 
+# Design C: exactly 2 namespaces — default (sample workloads) + system ns
+# (operator pod + bundle CatalogSource pod, both pull from here).
 create_secret default
 create_secret "${SYSTEM_NS}"
-if [ "${NON_OLM}" != true ]; then
-    create_secret olm
-    create_secret operators
-fi
 
 echo ""
-if [ "${NON_OLM}" = true ]; then
-    echo "✅ Pull secret '${SECRET_NAME}' created in: default, ${SYSTEM_NS} (Option B mode — OLM namespaces skipped)."
-else
-    echo "✅ Pull secret '${SECRET_NAME}' created in: default, ${SYSTEM_NS}, olm, operators."
-fi
+echo "✅ Pull secret '${SECRET_NAME}' created in: default, ${SYSTEM_NS}."
+echo "   (OLM's 'olm' + 'operators' namespaces are infrastructure; not our concern.)"
 echo ""
 echo "Next: deploy the operator (Step 4 in QUICK_START.md):"
-if [ "${NON_OLM}" = true ]; then
-    echo "   kubectl apply -f operator-deployment.yaml   # Option B — direct manifest deploy"
-else
-    echo "   bash deploy-bundle.sh ${SECRET_NAME}      # interactive helper (only if --customer-registry was used)"
-    echo "   # ─ or ─"
-    echo "   operator-sdk run bundle <bundle-image> \\"
-    echo "       --namespace ${SYSTEM_NS} \\"
-    echo "       --install-mode SingleNamespace=<your-kserve-ns> \\"
-    echo "       --pull-secret-name ${SECRET_NAME}"
-fi
+echo "   # Option A — OLM bundle (recommended):"
+echo "   bash deploy-bundle.sh ${SECRET_NAME}      # interactive helper (only if --customer-registry was used)"
+echo "   # ─ or ─"
+echo "   operator-sdk run bundle <bundle-image> \\"
+echo "       --namespace ${SYSTEM_NS} \\"
+echo "       --install-mode SingleNamespace=<your-kserve-ns> \\"
+echo "       --pull-secret-name ${SECRET_NAME}"
+echo ""
+echo "   # Option B — direct manifest (no OLM):"
+echo "   kubectl apply -f operator-deployment.yaml"
 CREDS_EOF
 # Inject generator-time values (secret name, system namespace)
 if [[ "$OSTYPE" == "darwin"* ]]; then

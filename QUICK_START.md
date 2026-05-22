@@ -191,25 +191,21 @@ kubectl create namespace "${KSERVE_NS}"          || true
 kubectl create namespace kserve-operator-system  || true
 ```
 
-> **Why this comes before credentials:** `setup-credentials.sh` (Step 3) creates pull secrets *inside* `kserve-operator-system`, `olm`, `operators`, and `default`. If those namespaces don't exist yet, the script silently skips them — and the operator pod's image pull will later fail with no obvious cause. OLM created `olm`/`operators` in Step 1; you create the other two here.
+> **Why this comes before credentials:** `setup-credentials.sh` (Step 3) creates pull secrets *inside* `kserve-operator-system` and `default`. If `kserve-operator-system` doesn't exist yet the operator pod's image pull will later fail with no obvious cause.
 
 ### Step 3 — Set up image pull credentials *(skip if images are public)*
 
 ```bash
-# OLM-based deploy (Option A — most users):
+# With CLI args (works for both Option A — OLM and Option B — direct manifest):
 bash setup-credentials.sh --user <registry-user> --pass <registry-token>
 
-# Direct-manifest deploy (Option B — no OLM):
-bash setup-credentials.sh --non-olm --user <registry-user> --pass <registry-token>
-
 # Or interactive (will prompt for username and password):
-bash setup-credentials.sh           # OLM mode
-bash setup-credentials.sh --non-olm # Option B mode
+bash setup-credentials.sh
 ```
 
 For the **customer-registry** flow, pass the **customer-registry** credentials here (the cluster will pull from the customer registry, not the build registry).
 
-> **`--non-olm`** (added for Issue #6): tells the script to skip the `olm` and `operators` namespace checks (and skip creating secrets in them). Use it when you're going to deploy via `kubectl apply -f operator-deployment.yaml` (Option B in Step 4) instead of `operator-sdk run bundle` (Option A). Without `--non-olm`, the pre-flight will fail on a no-OLM cluster because `olm`/`operators` namespaces don't exist.
+> **Design C — 2 namespaces.** The script creates pull secrets in exactly two namespaces: `default` (for sample workloads like the iris ISVC) and `<system-ns>` (operator pod + OLM CatalogSource pod, both pull from here). OLM's `olm` + `operators` namespaces are infrastructure — they never need our pull secret because OLM uses its own catalog auth. Both deploy paths (OLM Option A + direct-manifest Option B) need the same 2 namespaces; no flag distinguishes them. (`--non-olm` is accepted as a deprecated no-op for backwards compatibility with earlier CI scripts.)
 
 ### Step 4 — Deploy the operator
 
@@ -218,14 +214,18 @@ KServe Raw Mode supports **three deploy paths**, in increasing order of simplici
 | | Option A — OLM Bundle | Option B — Direct manifest | Option C — `install.sh` |
 |---|---|---|---|
 | **Who manages the operator?** | OLM (CSV reconciles) | Plain Kubernetes Deployment | No operator at all — pure `kubectl apply` |
-| **Cluster prereqs** | cert-manager + OLM + 4 namespaces (`olm`, `operators`, `kserve-operator-system`, `<KServe ns>`) | cert-manager + 2 namespaces (`kserve-operator-system`, `<KServe ns>`) | cert-manager only |
-| **Pull-secret command** | `setup-credentials.sh` | `setup-credentials.sh --non-olm` | N/A (manifests reference no private images by default) |
+| **Infrastructure prereq** | cert-manager + OLM (`operator-sdk olm install` brings its own `olm` + `operators` namespaces) | cert-manager | cert-manager |
+| **Namespaces you create** | 2: `kserve-operator-system` + `<KServe ns>` | 2: `kserve-operator-system` + `<KServe ns>` | 1: `<KServe ns>` (created by `install.sh`) |
+| **Pull-secret command** | `setup-credentials.sh` | `setup-credentials.sh` (same — no flag needed) | N/A (KServe upstream images are public) |
+| **Pull-secret target ns** | `default` + `kserve-operator-system` | `default` + `kserve-operator-system` | N/A |
 | **Custom KServe namespace** | yes — `--install-mode SingleNamespace=<name>` | currently bundled defaults only | yes — `KSERVE_NAMESPACE=<name> ./install.sh` |
 | **CR + auto-init** | yes (operator runs in cluster) | yes | no — operator is not deployed; KServe runs directly |
 | **Customer-facing complexity** | high (OLM concepts) | medium | low (one script, one CR-less install) |
 | **Best for** | production multi-tenant clusters with OLM already adopted | private-registry environments without OLM | dev clusters, customer demos, the simplest possible deploy |
-| **Steps to run** | 1 → 2 → 3 → 4A → 5 → 6 | 1 (skip OLM portions) → 2 → 3 (`--non-olm`) → 4B → 5 → 6 | 0 (cert-manager) → run `install.sh` → 6 |
-| **Tested by** | T01, T05, T10, T11, T12 | T04 | T02, T03-RETEST |
+| **Steps to run** | 0 (cert-manager) → 1 (OLM) → 2 (your namespaces) → 3 (creds) → 4A → 5 → 6 | 0 → 2 (your namespaces) → 3 (creds) → 4B → 5 → 6 | 0 → run `install.sh` → 6 |
+| **Tested by** | T01, T05, T10, T11, T12, T12-LIKE-REGRESSION | T04 | T02, T03-RETEST |
+
+> **Design C (2 namespaces, always).** All three options share the same footprint OF OURS: at most 2 namespaces we create (operator home + KServe runtime). OLM's `olm` + `operators` namespaces (Option A only) are OLM infrastructure — they exist regardless of our operator and we don't put anything there. See [`extra-docs/architecture-namespaces.md`](extra-docs/architecture-namespaces.md) for the full design rationale.
 
 If you don't have a strong preference, **start with Option C** — it's the fewest moving parts and works on any cluster.
 
@@ -259,10 +259,10 @@ operator-sdk run bundle "${BUNDLE_IMAGE}" \
 
 > **Customer registry flow:** If you generated with `--customer-registry`, the package contains `mirror-images.sh` and `deploy-bundle.sh`. Run `mirror-images.sh` first to push images to the customer registry, then `deploy-bundle.sh` — it handles the bundle image reference automatically.
 
-**Option B: Direct manifests (no OLM needed — skip Step 1, and pass `--non-olm` in Step 3)**
+**Option B: Direct manifests (no OLM needed — skip Step 1)**
 ```bash
-# Prereq for Option B: Step 3 must have been run with --non-olm (so the pull secret
-# is in kserve-operator-system without requiring olm/operators namespaces).
+# Prereq: kserve-operator-system + <KServe ns> created (Step 2),
+# and pull secret in those namespaces (Step 3 — no special flag).
 kubectl apply -f operator-deployment.yaml
 # Note: direct deploy uses the bundled defaults (kserve-operator-system + kserve).
 ```

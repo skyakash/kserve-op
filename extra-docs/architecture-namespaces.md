@@ -368,7 +368,29 @@ The original Path 1 plan kept a separate `spec.kserveNamespace` field. This desi
 
 ---
 
-## 9. Glossary
+## 9. Design C footprint: always 2 namespaces of ours
+
+A common point of confusion: when reading the OLM-deploy path (Option A) someone might count **4 namespaces** — `olm`, `operators`, `kserve-operator-system`, and `<KServe ns>` — and think the operator is "namespace-heavy." It is not. **Design C touches at most 2 namespaces we own**, regardless of which deploy path the customer picks:
+
+| Namespace | Owner | What lives there |
+|---|---|---|
+| `olm` | OLM project (created by `operator-sdk olm install`) | OLM controller, catalog operator, packageserver |
+| `operators` | OLM project (created by `operator-sdk olm install`) | The default global-operators OperatorGroup (we don't use it) |
+| `kserve-operator-system` | **Us** | KServeRawMode operator pod + OLM CatalogSource pod for our bundle |
+| `<KServe ns>` (e.g. `kserve`, `servewell`) | **Us** | KServe controllers + KServeRawMode CR + ISVCs (Design C: co-located) |
+
+**The two OLM namespaces are infrastructure** — `operator-sdk olm install` creates them whether we exist or not. Pre-existing OLM users already have them. They host OLM, not us; we don't put anything there. We don't even put pull secrets there — the bundle pull uses `--pull-secret-name=<name>` against the secret we created in `kserve-operator-system`, and OLM uses its own catalog auth (OperatorHub credentials) for everything else.
+
+**Therefore the customer footprint is always:**
+- Option A (OLM): 2 namespaces of ours + 2 OLM-infrastructure namespaces (only if they didn't already exist)
+- Option B (direct manifest): 2 namespaces of ours
+- Option C (`install.sh`): 1 namespace (the operator is not deployed)
+
+`setup-credentials.sh` reflects this honestly — it creates pull secrets in exactly 2 namespaces (`default` + the operator's system namespace). Earlier versions also targeted `olm` and `operators` defensively; those secrets were never consumed by any production code path and have been removed. The `--non-olm` flag (introduced briefly during Issue #6 troubleshooting) is now a deprecated no-op — both deploy paths converge on the same 2-namespace target.
+
+---
+
+## 10. Glossary
 
 | Term | Meaning |
 |------|---------|
@@ -383,7 +405,7 @@ The original Path 1 plan kept a separate `spec.kserveNamespace` field. This desi
 
 ---
 
-## 10. Resolved design decisions
+## 11. Resolved design decisions
 
 After review, the team committed to these answers (now reflected in the implementation):
 
