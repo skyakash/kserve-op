@@ -87,7 +87,7 @@ If the operator will be deployed to a customer environment with a **private regi
 > ℹ️ `--pull-secret` sets the pull secret name baked into the generated scripts. Credentials are **never embedded** — they are provided at runtime by the customer.
 
 The generated package (`p-kserve-operator-package/`) contains up to **four** helper scripts:
-- `setup-credentials.sh` — creates pull secrets in all required namespaces (default, kserve-operator-system, olm, operators) *(always generated)*
+- `setup-credentials.sh` — creates pull secrets in exactly 2 namespaces (`default` + `kserve-operator-system`) per the Design C footprint. *(always generated; see [`extra-docs/architecture-namespaces.md` § 9](extra-docs/architecture-namespaces.md#9-design-c-footprint-always-2-namespaces-of-ours) for why these two are sufficient)*
 - `enable-ingress.sh` — patches KServe to enable Kubernetes Ingress creation; restarts the controller. Used when you want external-URL access via an ingress controller. *(always generated)*
 - `mirror-images.sh` — copies operator + bundle images from the build registry to a customer registry (3 modes: online, archive, load) *(only with `--customer-registry`)*
 - `deploy-bundle.sh` — one-command OLM install helper that wraps `operator-sdk run bundle ... --install-mode SingleNamespace=${KSERVE_NS}` *(only with `--customer-registry`)*
