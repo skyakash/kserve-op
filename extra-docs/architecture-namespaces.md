@@ -368,7 +368,7 @@ The original Path 1 plan kept a separate `spec.kserveNamespace` field. This desi
 
 ---
 
-## 9. Design C footprint: always 2 namespaces of ours
+## 9. Design C footprint: always 2 namespaces of ours (both user-configurable)
 
 A common point of confusion: when reading the OLM-deploy path (Option A) someone might count **4 namespaces** — `olm`, `operators`, `kserve-operator-system`, and `<KServe ns>` — and think the operator is "namespace-heavy." It is not. **Design C touches at most 2 namespaces we own**, regardless of which deploy path the customer picks:
 
@@ -387,6 +387,17 @@ A common point of confusion: when reading the OLM-deploy path (Option A) someone
 - Option C (`install.sh`): 1 namespace (the operator is not deployed)
 
 `setup-credentials.sh` reflects this honestly — it creates pull secrets in exactly 2 namespaces (`default` + the operator's system namespace). Earlier versions also targeted `olm` and `operators` defensively; those secrets were never consumed by any production code path and have been removed. The `--non-olm` flag (introduced briefly during Issue #6 troubleshooting) is now a deprecated no-op — both deploy paths converge on the same 2-namespace target.
+
+### Both namespaces are user-configurable
+
+For a long time the KServe target namespace (`<KServe ns>` above) was the only configurable namespace — the operator's home namespace was hardcoded to `kserve-operator-system`. As of the namespace-configurability refactor, **both** are user-controllable:
+
+| Namespace | How to configure | Where it's used |
+|---|---|---|
+| **`<operator ns>`** (default `kserve-operator-system`) | Build-time: `generate-kserve-operator.sh --operator-namespace=<ns>` bakes the value into the generated `operator-deployment.yaml` (every Namespace/SA/RBAC/Service/Deployment ref) AND into the helper-script defaults (`setup-credentials.sh` SYSTEM_NS, `deploy-bundle.sh` OPERATOR_NS). Runtime: `OPERATOR_NS=<ns>` env var on `deploy-bundle.sh` and `SYSTEM_NS=<ns>` env var on `setup-credentials.sh` override the baked-in default at script-invocation time. | Operator pod home; OLM CatalogSource pod for the bundle; the namespace passed to `operator-sdk run bundle --namespace=<ns>`. |
+| **`<KServe ns>`** (default `kserve`) | Deploy-time: `--install-mode SingleNamespace=<ns>` on `operator-sdk run bundle` (Option A); `KSERVE_NAMESPACE=<ns>` env var on `install.sh` (Option C). For Option B the bundled `operator-deployment.yaml` defaults to `kserve` but is rewritten by the operator at apply-time. | KServe controller pods; the `KServeRawMode` CR; ISVCs (via Design C co-location). |
+
+**Backwards compatibility:** all existing CI scripts and customer invocations that don't pass `--operator-namespace` get byte-identical output to before — the operator still lands in `kserve-operator-system` by default. Adopt the override only if you have a naming collision or org-naming convention to honor.
 
 ---
 

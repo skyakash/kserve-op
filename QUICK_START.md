@@ -87,7 +87,7 @@ If the operator will be deployed to a customer environment with a **private regi
 > ℹ️ `--pull-secret` sets the pull secret name baked into the generated scripts. Credentials are **never embedded** — they are provided at runtime by the customer.
 
 The generated package (`p-kserve-operator-package/`) contains up to **four** helper scripts:
-- `setup-credentials.sh` — creates pull secrets in exactly 2 namespaces (`default` + `kserve-operator-system`) per the Design C footprint. *(always generated; see [`extra-docs/architecture-namespaces.md` § 9](extra-docs/architecture-namespaces.md#9-design-c-footprint-always-2-namespaces-of-ours) for why these two are sufficient)*
+- `setup-credentials.sh` — creates pull secrets in exactly 2 namespaces (`default` + the operator's home ns, default `kserve-operator-system`) per the Design C footprint. The operator namespace is configurable via `generate-kserve-operator.sh --operator-namespace=<ns>` at build time or `SYSTEM_NS=<ns>` env var at script invocation time. *(always generated; see [`extra-docs/architecture-namespaces.md` § 9](extra-docs/architecture-namespaces.md#9-design-c-footprint-always-2-namespaces-of-ours))*
 - `enable-ingress.sh` — patches KServe to enable Kubernetes Ingress creation; restarts the controller. Used when you want external-URL access via an ingress controller. *(always generated)*
 - `mirror-images.sh` — copies operator + bundle images from the build registry to a customer registry (3 modes: online, archive, load) *(only with `--customer-registry`)*
 - `deploy-bundle.sh` — one-command OLM install helper that wraps `operator-sdk run bundle ... --install-mode SingleNamespace=${KSERVE_NS}` *(only with `--customer-registry`)*
@@ -180,18 +180,26 @@ kubectl get pods -n olm   # wait until all pods are Running
 
 ### Step 2 — Create namespaces
 
-The operator pod always runs in a fixed `kserve-operator-system` namespace. The CR and the KServe runtime live **together** in a namespace of your choice — defaults to `kserve`, but you can pick anything (e.g. `my-kserve`) and the operator's apply-time namespace rewriting will install KServe there. The OperatorGroup defined in Step 4 is the single source of truth.
+**Both** of Design C's 2 namespaces are now user-configurable:
+
+- **Operator's home namespace** — defaults to `kserve-operator-system`. Override at build time via `generate-kserve-operator.sh --operator-namespace <ns>` (bakes into all generated manifests + helper-script defaults) OR at deploy time via `OPERATOR_NS=<ns>` env var on `deploy-bundle.sh` and `SYSTEM_NS=<ns>` env var on `setup-credentials.sh`. The OperatorGroup OLM creates targets the namespace passed to `--namespace` on `operator-sdk run bundle`.
+- **KServe target namespace** — defaults to `kserve`. The CR and the KServe runtime live **together** here (Design C). Pick anything (e.g. `my-kserve`) via `--install-mode SingleNamespace=<ns>` on the deploy command, or `KSERVE_NAMESPACE=<ns>` env var on `install.sh` (Option C). The operator's apply-time namespace rewriting installs KServe there.
 
 ```bash
 # Pick the namespace name you want for KServe (default: 'kserve').
 # Both the KServeRawMode CR and the KServe runtime will live here.
 KSERVE_NS=kserve
 
-kubectl create namespace "${KSERVE_NS}"          || true
-kubectl create namespace kserve-operator-system  || true
+# Pick the namespace name you want for the operator pod (default: 'kserve-operator-system').
+# Override at build time with: generate-kserve-operator.sh --operator-namespace=<ns>
+# Override at deploy time with: OPERATOR_NS=<ns> bash deploy-bundle.sh ...
+OPERATOR_NS="${OPERATOR_NS:-kserve-operator-system}"
+
+kubectl create namespace "${KSERVE_NS}"     || true
+kubectl create namespace "${OPERATOR_NS}"   || true
 ```
 
-> **Why this comes before credentials:** `setup-credentials.sh` (Step 3) creates pull secrets *inside* `kserve-operator-system` and `default`. If `kserve-operator-system` doesn't exist yet the operator pod's image pull will later fail with no obvious cause.
+> **Why this comes before credentials:** `setup-credentials.sh` (Step 3) creates pull secrets *inside* `${OPERATOR_NS}` and `default`. If `${OPERATOR_NS}` doesn't exist yet the operator pod's image pull will later fail with no obvious cause.
 
 ### Step 3 — Set up image pull credentials *(skip if images are public)*
 
@@ -215,9 +223,9 @@ KServe Raw Mode supports **three deploy paths**, in increasing order of simplici
 |---|---|---|---|
 | **Who manages the operator?** | OLM (CSV reconciles) | Plain Kubernetes Deployment | No operator at all — pure `kubectl apply` |
 | **Infrastructure prereq** | cert-manager + OLM (`operator-sdk olm install` brings its own `olm` + `operators` namespaces) | cert-manager | cert-manager |
-| **Namespaces you create** | 2: `kserve-operator-system` + `<KServe ns>` | 2: `kserve-operator-system` + `<KServe ns>` | 1: `<KServe ns>` (created by `install.sh`) |
+| **Namespaces you create** | 2: `<operator ns>` (default `kserve-operator-system`) + `<KServe ns>` (default `kserve`). Both configurable. | Same as Option A. | 1: `<KServe ns>` (default `kserve`, override `KSERVE_NAMESPACE=...`). |
 | **Pull-secret command** | `setup-credentials.sh` | `setup-credentials.sh` (same — no flag needed) | N/A (KServe upstream images are public) |
-| **Pull-secret target ns** | `default` + `kserve-operator-system` | `default` + `kserve-operator-system` | N/A |
+| **Pull-secret target ns** | `default` + `<operator ns>` | `default` + `<operator ns>` | N/A |
 | **Custom KServe namespace** | yes — `--install-mode SingleNamespace=<name>` | currently bundled defaults only | yes — `KSERVE_NAMESPACE=<name> ./install.sh` |
 | **CR + auto-init** | yes (operator runs in cluster) | yes | no — operator is not deployed; KServe runs directly |
 | **Customer-facing complexity** | high (OLM concepts) | medium | low (one script, one CR-less install) |
@@ -272,10 +280,10 @@ flowchart TD
 BUNDLE_IMAGE=<your-bundle-image>
 
 # Single-command deploy. --install-mode auto-creates an OperatorGroup in
-# kserve-operator-system targeting ${KSERVE_NS}; the downward-API
+# the operator namespace (${OPERATOR_NS}) targeting ${KSERVE_NS}; the downward-API
 # WATCH_NAMESPACE then drives the auto-init's CR placement.
 operator-sdk run bundle "${BUNDLE_IMAGE}" \
-  --namespace kserve-operator-system \
+  --namespace "${OPERATOR_NS:-kserve-operator-system}" \
   --install-mode "SingleNamespace=${KSERVE_NS}" \
   --pull-secret-name dockerhub-creds
 ```
@@ -291,10 +299,10 @@ operator-sdk run bundle "${BUNDLE_IMAGE}" \
 
 **Option B: Direct manifests (no OLM needed — skip Step 1)**
 ```bash
-# Prereq: kserve-operator-system + <KServe ns> created (Step 2),
+# Prereq: ${OPERATOR_NS} + <KServe ns> created (Step 2),
 # and pull secret in those namespaces (Step 3 — no special flag).
 kubectl apply -f operator-deployment.yaml
-# Note: direct deploy uses the bundled defaults (kserve-operator-system + kserve).
+# Note: direct deploy uses the bundled defaults (operator ns from --operator-namespace at build time, or kserve-operator-system if unset; KServe ns = kserve).
 ```
 
 **Option C: `install.sh` (no operator, no OLM — pure `kubectl apply` orchestrated by a shell script)**
