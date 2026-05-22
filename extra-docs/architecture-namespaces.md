@@ -399,6 +399,25 @@ For a long time the KServe target namespace (`<KServe ns>` above) was the only c
 
 **Backwards compatibility:** all existing CI scripts and customer invocations that don't pass `--operator-namespace` get byte-identical output to before — the operator still lands in `kserve-operator-system` by default. Adopt the override only if you have a naming collision or org-naming convention to honor.
 
+### Pure deploy-time symmetry
+
+As of the `install-operator-deployment.sh` wrapper, **all three deploy paths support deploy-time namespace selection** without rebuilding the package:
+
+| Path | Mechanism | Deploy command |
+|---|---|---|
+| **Option A (OLM)** | OLM rewrites the CSV's namespaced resources at install time | `OPERATOR_NS=<ns> bash deploy-bundle.sh <secret>` (or `operator-sdk run bundle --namespace=<ns>` directly) |
+| **Option B (Direct YAML)** | Wrapper script does Python YAML walk before `kubectl apply -f -` | `OPERATOR_NAMESPACE=<ns> bash install-operator-deployment.sh` |
+| **Option C (install.sh)** | install.sh's existing Python rewrite handles KServe manifests | (Operator not deployed; the operator-namespace concept doesn't apply) |
+
+The build-time `--operator-namespace` flag is now **optional** — it just sets the baked-in default value in the generated YAML and helper scripts. Pure deploy-time customers can skip it entirely and pick the namespace at apply time via the env vars above.
+
+The Option B wrapper's rewrite categories are intentionally smaller than `install.sh`'s (no Certificate `dnsNames`, no `inject-ca-from` annotations, no Webhook `clientConfig` — `operator-deployment.yaml` has none of those):
+1. `kind == "Namespace"` AND `metadata.name == <baked>` → rename
+2. `metadata.namespace == <baked>` (SA, Role, RoleBinding, Service, Deployment) → rewrite
+3. `(Cluster)RoleBinding.subjects[].namespace == <baked>` → rewrite
+
+When `OPERATOR_NAMESPACE` matches the baked-in default (or is unset), the rewrite short-circuits and `stdin → stdout` passes through verbatim — byte-equivalent to `kubectl apply -f operator-deployment.yaml`.
+
 ---
 
 ## 10. Glossary

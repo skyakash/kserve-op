@@ -1004,6 +1004,173 @@ fi
 chmod +x "${PACKAGE_DIR}/setup-credentials.sh"
 echo "Generated setup-credentials.sh in the customer package (credentials provided at runtime — not embedded)."
 
+# Generate install-operator-deployment.sh — pure deploy-time namespace-rewrite
+# wrapper for Option B (kubectl apply -f operator-deployment.yaml). Mirrors
+# the install.sh Python-YAML-walk pattern from kserve-raw-base/install.sh.tmpl
+# (Issue #1 fix). Makes the operator namespace truly deploy-time-configurable
+# without regenerating the package. The baked-in default (__OPERATOR_NS_DEFAULT__)
+# is substituted from the --operator-namespace flag at generator time.
+cat > "${PACKAGE_DIR}/install-operator-deployment.sh" <<'INSTALL_OP_EOF'
+#!/bin/bash
+# =============================================================================
+# install-operator-deployment.sh — Option B (direct manifest) installer with
+# pure deploy-time namespace selection.
+#
+# Wraps `kubectl apply -f operator-deployment.yaml` with a Python YAML rewrite
+# step so the operator can be deployed into ANY namespace at deploy time —
+# without needing to regenerate the package. Mirrors install.sh's pattern
+# from kserve-raw-base for KServe manifests.
+#
+# Usage:
+#   bash install-operator-deployment.sh
+#       Install into the baked-in default namespace (no rewrite).
+#
+#   OPERATOR_NAMESPACE=my-ops bash install-operator-deployment.sh
+#       Install into 'my-ops' (or any other namespace) at deploy time. The
+#       script rewrites every namespace reference in operator-deployment.yaml
+#       before applying.
+#
+#   bash install-operator-deployment.sh --dry-run
+#       Print the rewritten YAML to stdout instead of applying.
+#
+# Prerequisites:
+#   - kubectl (any recent version)
+#   - cert-manager installed in the cluster
+#   - python3 + PyYAML on the machine running the script
+#   - The target namespace either pre-created OR will be created by this
+#     script's apply step (operator-deployment.yaml includes a Namespace
+#     resource).
+#
+# Categories rewritten (smaller than install.sh's set because operator-
+# deployment.yaml has no cert-manager Certificates, no webhook configs,
+# no inject-ca-from annotations):
+#   - Namespace.metadata.name (rename the Namespace resource itself)
+#   - metadata.namespace on SA, Role, RoleBinding, Service, Deployment
+#   - subjects[].namespace on (Cluster)RoleBinding
+#
+# When OPERATOR_NAMESPACE is unset OR matches the baked default, no rewrite
+# happens — stdin/stdout passes through verbatim. Byte-equivalent to
+# `kubectl apply -f operator-deployment.yaml` in that case.
+# =============================================================================
+set -e
+
+OPERATOR_NS_DEFAULT="__OPERATOR_NS_DEFAULT__"
+OPERATOR_NAMESPACE="${OPERATOR_NAMESPACE:-${OPERATOR_NS_DEFAULT}}"
+DRY_RUN=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run) DRY_RUN=true; shift ;;
+        -h|--help)
+            sed -n '3,40p' "$0" | sed 's/^# \?//'
+            exit 0
+            ;;
+        *) echo "Unknown arg: $1"; echo "Try: bash install-operator-deployment.sh --help"; exit 1 ;;
+    esac
+done
+
+# Pre-flight
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+YAML_FILE="${SCRIPT_DIR}/operator-deployment.yaml"
+
+if [ ! -f "${YAML_FILE}" ]; then
+    echo "ERROR: ${YAML_FILE} not found." >&2
+    exit 1
+fi
+
+echo "Pre-flight: checking python3 + PyYAML..." >&2
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "ERROR: python3 is required but not found on PATH." >&2
+    exit 1
+fi
+if ! python3 -c 'import yaml' >/dev/null 2>&1; then
+    echo "ERROR: Python 'PyYAML' module is required but not importable." >&2
+    echo "       Install: pip3 install --user PyYAML" >&2
+    exit 1
+fi
+echo "      python3 + PyYAML detected." >&2
+
+if [ "${DRY_RUN}" != true ]; then
+    echo "Pre-flight: checking cert-manager..." >&2
+    if ! kubectl get crd certificates.cert-manager.io >/dev/null 2>&1; then
+        echo "ERROR: cert-manager is not installed in this cluster." >&2
+        echo "       Install it before re-running this script." >&2
+        exit 1
+    fi
+    echo "      cert-manager detected." >&2
+fi
+
+echo "Target operator namespace: ${OPERATOR_NAMESPACE} (baked default: ${OPERATOR_NS_DEFAULT})" >&2
+
+# Rewrite + apply in one pipeline. The Python source is passed via -c so
+# the YAML stream stays on stdin.
+rewrite_ns() {
+    OPERATOR_NS_BAKED="${OPERATOR_NS_DEFAULT}" \
+    OPERATOR_NS_TARGET="${OPERATOR_NAMESPACE}" \
+    python3 -c "$(cat <<'PY_EOF'
+import os, sys, yaml
+
+BAKED  = os.environ["OPERATOR_NS_BAKED"]
+TARGET = os.environ["OPERATOR_NS_TARGET"]
+
+def rewrite_doc(doc):
+    if not isinstance(doc, dict):
+        return doc
+
+    kind = doc.get("kind")
+    meta = doc.get("metadata") or {}
+
+    # 1. Namespace resource: rename via metadata.name
+    if kind == "Namespace" and meta.get("name") == BAKED:
+        meta["name"] = TARGET
+        doc["metadata"] = meta
+
+    # 2. Namespaced resources: rewrite metadata.namespace
+    if meta.get("namespace") == BAKED:
+        meta["namespace"] = TARGET
+        doc["metadata"] = meta
+
+    # 3. (Cluster)RoleBinding subjects[].namespace
+    if kind in ("ClusterRoleBinding", "RoleBinding"):
+        for subj in doc.get("subjects") or []:
+            if isinstance(subj, dict) and subj.get("namespace") == BAKED:
+                subj["namespace"] = TARGET
+
+    return doc
+
+# Short-circuit: TARGET == BAKED means no rewrite. stdin → stdout verbatim.
+if TARGET == BAKED:
+    sys.stdout.write(sys.stdin.read())
+    sys.exit(0)
+
+docs = list(yaml.safe_load_all(sys.stdin))
+out  = [rewrite_doc(d) for d in docs if d is not None]
+yaml.safe_dump_all(out, sys.stdout, default_flow_style=False, sort_keys=False)
+PY_EOF
+)"
+}
+
+if [ "${DRY_RUN}" = true ]; then
+    rewrite_ns < "${YAML_FILE}"
+else
+    rewrite_ns < "${YAML_FILE}" | kubectl apply -f -
+    echo "" >&2
+    echo "✅ Operator deployment applied to namespace: ${OPERATOR_NAMESPACE}" >&2
+    echo "" >&2
+    echo "Verify the operator pod is running:" >&2
+    echo "  kubectl get pods -n ${OPERATOR_NAMESPACE}" >&2
+fi
+INSTALL_OP_EOF
+# Substitute the build-time __OPERATOR_NS_DEFAULT__ placeholder with the value
+# of --operator-namespace (defaults to 'kserve-operator-system').
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    sed -i '' "s|__OPERATOR_NS_DEFAULT__|${OPERATOR_NAMESPACE}|g" "${PACKAGE_DIR}/install-operator-deployment.sh"
+else
+    sed -i "s|__OPERATOR_NS_DEFAULT__|${OPERATOR_NAMESPACE}|g" "${PACKAGE_DIR}/install-operator-deployment.sh"
+fi
+chmod +x "${PACKAGE_DIR}/install-operator-deployment.sh"
+echo "Generated install-operator-deployment.sh — Option B deploy-time namespace rewrite wrapper."
+
 # Generate enable-ingress.sh — wraps the ConfigMap patch + controller restart
 # needed to flip KServe from RawDeployment-no-Ingress mode (default) to
 # create-Ingress-via-<class> mode. Always generated; only relevant if the

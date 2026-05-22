@@ -298,12 +298,24 @@ operator-sdk run bundle "${BUNDLE_IMAGE}" \
 > **Customer registry flow:** If you generated with `--customer-registry`, the package contains `mirror-images.sh` and `deploy-bundle.sh`. Run `mirror-images.sh` first to push images to the customer registry, then `deploy-bundle.sh` — it handles the bundle image reference automatically.
 
 **Option B: Direct manifests (no OLM needed — skip Step 1)**
+
+Two equivalent invocations:
+
 ```bash
 # Prereq: ${OPERATOR_NS} + <KServe ns> created (Step 2),
 # and pull secret in those namespaces (Step 3 — no special flag).
+
+# Default — uses the operator namespace baked into the package
+# (kserve-operator-system, or whatever you passed to --operator-namespace at build time):
 kubectl apply -f operator-deployment.yaml
-# Note: direct deploy uses the bundled defaults (operator ns from --operator-namespace at build time, or kserve-operator-system if unset; KServe ns = kserve).
+
+# OR — choose the operator namespace at deploy time (no rebuild needed):
+OPERATOR_NAMESPACE=<your-ns> bash install-operator-deployment.sh
+# Python YAML walk rewrites every namespace ref in operator-deployment.yaml
+# before applying. The script does --dry-run too if you want to preview.
 ```
+
+> **Pure deploy-time architecture.** The wrapper script (`install-operator-deployment.sh`) mirrors `install.sh`'s rewrite pattern from Option C, making Option B symmetric: one generated package serves any namespace. Use `OPERATOR_NAMESPACE` consistently across `install-operator-deployment.sh` AND `SYSTEM_NS` on `setup-credentials.sh` so the operator pod's pull secret lands in the same namespace it's deployed into.
 
 **Option C: `install.sh` (no operator, no OLM — pure `kubectl apply` orchestrated by a shell script)**
 
