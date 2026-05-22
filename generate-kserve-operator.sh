@@ -1026,9 +1026,20 @@ cat > "${PACKAGE_DIR}/install-operator-deployment.sh" <<'INSTALL_OP_EOF'
 #       Install into the baked-in default namespace (no rewrite).
 #
 #   OPERATOR_NAMESPACE=my-ops bash install-operator-deployment.sh
-#       Install into 'my-ops' (or any other namespace) at deploy time. The
-#       script rewrites every namespace reference in operator-deployment.yaml
-#       before applying.
+#       Install operator into 'my-ops' (or any other namespace) at deploy
+#       time. The script rewrites every namespace reference in
+#       operator-deployment.yaml before applying.
+#
+#   KSERVE_NS=servewell bash install-operator-deployment.sh
+#       Tell the operator to watch 'servewell' (instead of the default
+#       'kserve') for KServeRawMode CRs + install KServe runtime there.
+#       The script rewrites the Deployment's WATCH_NAMESPACE env var from
+#       the OLM-downward-API source to a hardcoded literal value. Useful
+#       for non-OLM (Option B) deploys that want a custom KServe namespace.
+#
+#   OPERATOR_NAMESPACE=my-ops KSERVE_NS=servewell bash install-operator-deployment.sh
+#       Both overrides combined. Operator lands in 'my-ops'; CR + KServe
+#       runtime land in 'servewell'. Make sure both namespaces exist.
 #
 #   bash install-operator-deployment.sh --dry-run
 #       Print the rewritten YAML to stdout instead of applying.
@@ -1056,6 +1067,10 @@ set -e
 
 OPERATOR_NS_DEFAULT="__OPERATOR_NS_DEFAULT__"
 OPERATOR_NAMESPACE="${OPERATOR_NAMESPACE:-${OPERATOR_NS_DEFAULT}}"
+# KSERVE_NS, if set, rewrites the Deployment's WATCH_NAMESPACE env var to
+# point at the user's chosen KServe target namespace. Empty (the default)
+# means leave WATCH_NAMESPACE alone — operator uses its fallback of "kserve".
+KSERVE_NS="${KSERVE_NS:-}"
 DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
@@ -1101,17 +1116,41 @@ if [ "${DRY_RUN}" != true ]; then
 fi
 
 echo "Target operator namespace: ${OPERATOR_NAMESPACE} (baked default: ${OPERATOR_NS_DEFAULT})" >&2
+if [ -n "${KSERVE_NS}" ]; then
+    echo "Target KServe namespace:    ${KSERVE_NS} (rewriting WATCH_NAMESPACE env var)" >&2
+fi
 
 # Rewrite + apply in one pipeline. The Python source is passed via -c so
 # the YAML stream stays on stdin.
 rewrite_ns() {
     OPERATOR_NS_BAKED="${OPERATOR_NS_DEFAULT}" \
     OPERATOR_NS_TARGET="${OPERATOR_NAMESPACE}" \
+    KSERVE_NS_TARGET="${KSERVE_NS}" \
     python3 -c "$(cat <<'PY_EOF'
 import os, sys, yaml
 
-BAKED  = os.environ["OPERATOR_NS_BAKED"]
-TARGET = os.environ["OPERATOR_NS_TARGET"]
+BAKED      = os.environ["OPERATOR_NS_BAKED"]
+TARGET     = os.environ["OPERATOR_NS_TARGET"]
+KSERVE_NS  = os.environ.get("KSERVE_NS_TARGET", "")
+
+def rewrite_watch_namespace(doc):
+    # In the operator Deployment, locate the WATCH_NAMESPACE env entry
+    # and replace its valueFrom (downward-API OLM annotation) with a
+    # hardcoded value. Only invoked when KSERVE_NS is set.
+    if doc.get("kind") != "Deployment":
+        return
+    spec = doc.get("spec") or {}
+    tmpl = spec.get("template") or {}
+    pspec = tmpl.get("spec") or {}
+    for c in pspec.get("containers") or []:
+        if not isinstance(c, dict):
+            continue
+        envs = c.get("env") or []
+        for entry in envs:
+            if isinstance(entry, dict) and entry.get("name") == "WATCH_NAMESPACE":
+                # Drop valueFrom (downward-API OLM annotation), set literal.
+                entry.pop("valueFrom", None)
+                entry["value"] = KSERVE_NS
 
 def rewrite_doc(doc):
     if not isinstance(doc, dict):
@@ -1136,10 +1175,15 @@ def rewrite_doc(doc):
             if isinstance(subj, dict) and subj.get("namespace") == BAKED:
                 subj["namespace"] = TARGET
 
+    # 4. Deployment WATCH_NAMESPACE env var (only if KSERVE_NS set)
+    if KSERVE_NS:
+        rewrite_watch_namespace(doc)
+
     return doc
 
-# Short-circuit: TARGET == BAKED means no rewrite. stdin → stdout verbatim.
-if TARGET == BAKED:
+# Short-circuit: TARGET == BAKED AND KSERVE_NS unset → no rewrite at all.
+# stdin → stdout verbatim.
+if TARGET == BAKED and not KSERVE_NS:
     sys.stdout.write(sys.stdin.read())
     sys.exit(0)
 
@@ -1156,6 +1200,10 @@ else
     rewrite_ns < "${YAML_FILE}" | kubectl apply -f -
     echo "" >&2
     echo "✅ Operator deployment applied to namespace: ${OPERATOR_NAMESPACE}" >&2
+    if [ -n "${KSERVE_NS}" ]; then
+        echo "✅ Operator will watch KServe target namespace: ${KSERVE_NS}" >&2
+        echo "   (Make sure '${KSERVE_NS}' namespace exists before the auto-init retries exhaust.)" >&2
+    fi
     echo "" >&2
     echo "Verify the operator pod is running:" >&2
     echo "  kubectl get pods -n ${OPERATOR_NAMESPACE}" >&2

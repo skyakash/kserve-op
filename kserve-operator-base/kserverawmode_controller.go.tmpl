@@ -267,16 +267,43 @@ func (r *KServeRawModeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			return
 		}
 
-		// Retry a few times in case of transient API server errors at startup
-		for attempt := 1; attempt <= 5; attempt++ {
+		// Retry indefinitely with exponential backoff capped at 30 s.
+		//
+		// Previous version gave up after 5 attempts (~30 s total) which was
+		// too short — customers occasionally create the CR's target namespace
+		// (default 'kserve', or KSERVE_NS for Option B) AFTER the operator
+		// has started, and the retry exhausted before the namespace existed.
+		// Recovery required a manual `kubectl rollout restart` on the
+		// operator deployment. Now the loop keeps retrying as long as the
+		// operator pod is running; once the namespace appears, the next
+		// retry succeeds. The manager's context cancels the loop on shutdown
+		// — no goroutine leak.
+		backoff := 2 * time.Second
+		const maxBackoff = 30 * time.Second
+		attempt := 0
+		for {
+			attempt++
 			if err := r.ensureDefaultCR(ctx); err != nil {
-				logger.Error(err, "Auto-init attempt failed, will retry", "attempt", attempt)
-				time.Sleep(time.Duration(attempt*2) * time.Second)
+				if ctx.Err() != nil {
+					return // context canceled (pod shutting down)
+				}
+				logger.Error(err, "Auto-init attempt failed, will retry", "attempt", attempt, "next-backoff", backoff)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(backoff):
+				}
+				if backoff < maxBackoff {
+					backoff *= 2
+					if backoff > maxBackoff {
+						backoff = maxBackoff
+					}
+				}
 				continue
 			}
-			return // success
+			logger.Info("Auto-init succeeded", "attempts", attempt)
+			return
 		}
-		logger.Error(fmt.Errorf("exhausted retries"), "Failed to auto-create default KServeRawMode CR after 5 attempts")
 	}()
 
 	return ctrl.NewControllerManagedBy(mgr).
