@@ -1041,13 +1041,18 @@ if [[ "${NEED_WORKLOAD_SECRET}" == "true" ]]; then
 fi
 
 # Dedup (e.g. KSERVE_WORKLOAD_NS=default + SYSTEM_NS=default would collide).
+# Use a linear-scan O(n^2) dedup so this stays compatible with bash 3.2
+# (macOS default) — associative arrays (declare -A) are bash 4+ only.
 UNIQUE_NSES=()
-declare -A SEEN
 for ns in "${SECRET_NSES[@]}"; do
-    if [[ -z "${SEEN[$ns]:-}" ]]; then
-        SEEN[$ns]=1
-        UNIQUE_NSES+=("$ns")
-    fi
+    skip=false
+    for existing in "${UNIQUE_NSES[@]:-}"; do
+        if [[ "${existing}" == "${ns}" ]]; then
+            skip=true
+            break
+        fi
+    done
+    [[ "${skip}" == "false" ]] && UNIQUE_NSES+=("${ns}")
 done
 
 for ns in "${UNIQUE_NSES[@]}"; do
