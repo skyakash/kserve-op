@@ -97,7 +97,7 @@ for ns in default kserve-operator-system; do
 done
 ```
 
-> If you customized the operator's home namespace (via `--operator-namespace` at build time OR `OPERATOR_NS`/`SYSTEM_NS` at deploy time — see "Customizing namespaces" below), substitute `kserve-operator-system` with your chosen value.
+> If you customized the operator's home namespace at deploy time (via `OPERATOR_NS` / `SYSTEM_NS` / `OPERATOR_NAMESPACE` env vars — see "Customizing namespaces" below), substitute `kserve-operator-system` with your chosen value.
 
 
 ## Deployment Instructions
@@ -135,17 +135,9 @@ operator-sdk run bundle <your-bundle-image-tag> \
 
 ---
 
-### Customizing namespaces (Design C: both are configurable)
+### Customizing namespaces (Design C: both deploy-time configurable)
 
-Both Design C namespaces (operator's home + KServe target) can be customized — at build time OR at deploy time:
-
-**Build-time** (bakes the value into all shipped artifacts; useful for orgs with naming conventions):
-```bash
-./generate-kserve-operator.sh ... --operator-namespace=<your-operator-ns>
-# Bakes <your-operator-ns> into operator-deployment.yaml + setup-credentials.sh + deploy-bundle.sh
-```
-
-**Deploy-time** (no rebuild; pick at apply time):
+The baked default in this package is `kserve-operator-system` for the operator's home + `kserve` for the KServe target. Both can be customized **at deploy time** via env vars on the helper scripts — one package, any namespace topology, no rebuild needed:
 
 | Script | Env var | Purpose |
 |---|---|---|

@@ -87,7 +87,7 @@ If the operator will be deployed to a customer environment with a **private regi
 > ℹ️ `--pull-secret` sets the pull secret name baked into the generated scripts. Credentials are **never embedded** — they are provided at runtime by the customer.
 
 The generated package (`p-kserve-operator-package/`) contains up to **four** helper scripts:
-- `setup-credentials.sh` — creates pull secrets in exactly 2 namespaces (`default` + the operator's home ns, default `kserve-operator-system`) per the Design C footprint. The operator namespace is configurable via `generate-kserve-operator.sh --operator-namespace=<ns>` at build time or `SYSTEM_NS=<ns>` env var at script invocation time. *(always generated; see [`extra-docs/architecture-namespaces.md` § 9](extra-docs/architecture-namespaces.md#9-design-c-footprint-always-2-namespaces-of-ours))*
+- `setup-credentials.sh` — creates pull secrets in exactly 2 namespaces (`default` + the operator's home ns) per the Design C footprint. Defaults to `kserve-operator-system`; override at script invocation time via `SYSTEM_NS=<ns>` env var. *(always generated; see [`extra-docs/architecture-namespaces.md` § 9](extra-docs/architecture-namespaces.md#9-design-c-footprint-always-2-namespaces-of-ours))*
 - `enable-ingress.sh` — patches KServe to enable Kubernetes Ingress creation; restarts the controller. Used when you want external-URL access via an ingress controller. *(always generated)*
 - `mirror-images.sh` — copies operator + bundle images from the build registry to a customer registry (3 modes: online, archive, load) *(only with `--customer-registry`)*
 - `deploy-bundle.sh` — one-command OLM install helper that wraps `operator-sdk run bundle ... --install-mode SingleNamespace=${KSERVE_NS}` *(only with `--customer-registry`)*
@@ -182,7 +182,11 @@ kubectl get pods -n olm   # wait until all pods are Running
 
 **Both** of Design C's 2 namespaces are now user-configurable:
 
-- **Operator's home namespace** — defaults to `kserve-operator-system`. Override at build time via `generate-kserve-operator.sh --operator-namespace <ns>` (bakes into all generated manifests + helper-script defaults) OR at deploy time via `OPERATOR_NS=<ns>` env var on `deploy-bundle.sh` and `SYSTEM_NS=<ns>` env var on `setup-credentials.sh`. The OperatorGroup OLM creates targets the namespace passed to `--namespace` on `operator-sdk run bundle`.
+- **Operator's home namespace** — baked default is `kserve-operator-system` in all generated artifacts. Override at **deploy time** via env vars on the helper scripts:
+  - `OPERATOR_NAMESPACE=<ns>` on `install-operator-deployment.sh` (Option B wrapper)
+  - `OPERATOR_NS=<ns>` on `deploy-bundle.sh` (Option A / OLM)
+  - `SYSTEM_NS=<ns>` on `setup-credentials.sh` (pull-secret target)
+  - For Option A, OLM substitutes the namespace from `operator-sdk run bundle --namespace=<ns>` automatically.
 - **KServe target namespace** — defaults to `kserve`. The CR and the KServe runtime live **together** here (Design C). Pick anything (e.g. `my-kserve`) via `--install-mode SingleNamespace=<ns>` on the deploy command, or `KSERVE_NAMESPACE=<ns>` env var on `install.sh` (Option C). The operator's apply-time namespace rewriting installs KServe there.
 
 ```bash
@@ -191,8 +195,8 @@ kubectl get pods -n olm   # wait until all pods are Running
 KSERVE_NS=kserve
 
 # Pick the namespace name you want for the operator pod (default: 'kserve-operator-system').
-# Override at build time with: generate-kserve-operator.sh --operator-namespace=<ns>
 # Override at deploy time with: OPERATOR_NS=<ns> bash deploy-bundle.sh ...
+# (or OPERATOR_NAMESPACE=<ns> bash install-operator-deployment.sh for Option B)
 OPERATOR_NS="${OPERATOR_NS:-kserve-operator-system}"
 
 kubectl create namespace "${KSERVE_NS}"     || true
@@ -305,8 +309,7 @@ Two equivalent invocations:
 # Prereq: ${OPERATOR_NS} + <KServe ns> created (Step 2),
 # and pull secret in those namespaces (Step 3 — no special flag).
 
-# Default — uses the operator namespace baked into the package
-# (kserve-operator-system, or whatever you passed to --operator-namespace at build time):
+# Default — uses the baked-in operator namespace 'kserve-operator-system':
 kubectl apply -f operator-deployment.yaml
 
 # OR — choose BOTH namespaces at deploy time (no rebuild needed):

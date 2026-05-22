@@ -132,6 +132,13 @@ Items #4 and #5 are stretch goals — wait until you've shipped the first three.
 
 **Workaround in place (side-effect of Issue #2 fix):** The shipped air-gap sample at `kserve-raw-base/airgap-localmodelcache/06-clusterstoragecontainer-s3.yaml` defines a `ClusterStorageContainer` with `workloadType: localModelDownloadJob` AND explicit `image: kserve/storage-initializer:v0.16.0`. When a `ClusterStorageContainer` matches the cache's URI prefix, the controller honors its image — bypassing the broken ConfigMap-fallback path entirely. **For online (`gs://`) flows that depend on the default container, the issue remains visible** but the impact is small (`:latest` is currently equivalent to `:v0.16.0` upstream; would only diverge on a future tag mismatch). If/when that's a real problem, ship a parallel `ClusterStorageContainer` for `gs://` with the pinned image as a one-line follow-up sample. Upstream filing recommended once we're ready to engage KServe maintainers.
 
+### Build-time `--operator-namespace` flag removed; deploy-time-only namespace selection — DONE
+**Symptom:** Two parallel ways existed to customize the operator's home namespace — a build-time `--operator-namespace=<ns>` flag (commit `0ef4d9d`) AND deploy-time env vars (`OPERATOR_NAMESPACE` on the wrapper, `OPERATOR_NS` on `deploy-bundle.sh`, `SYSTEM_NS` on `setup-credentials.sh`). User feedback during T18 prep flagged this as confusing: "which one do I use? what happens if I set both?"
+
+**Resolution:** Removed the build-time flag entirely. The baked default in all generated artifacts is now the canonical `kserve-operator-system`. Customers customize **at deploy time only** via the env vars listed above. Generator's `OPERATOR_NAMESPACE` variable, the `--operator-namespace` case-statement entry, the help-text line, and the three placeholder-substitution blocks (`__SYSTEM_NS__`, `__OPERATOR_NS__`, `__OPERATOR_NS_DEFAULT__`) are all gone. Heredocs inline `kserve-operator-system` directly.
+
+**Validated live:** generator rejects `--operator-namespace=foo` ("Unknown parameter"). Default-flag build produces 9 `kserve-operator-system` refs in `operator-deployment.yaml`. Deploy-time `OPERATOR_NAMESPACE=ops-custom KSERVE_NS=servewell bash install-operator-deployment.sh --dry-run` still produces 9 `ops-custom` refs (wrapper rewrite works unchanged). One namespace-selection story, zero confusion.
+
 ---
 
 ## Status summary (as of 2026-05-21)

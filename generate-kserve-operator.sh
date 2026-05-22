@@ -27,11 +27,13 @@ TRUST_CERT_PATH=""
 # Valid values: AllNamespaces | OwnNamespace | SingleNamespace | MultiNamespace
 INSTALL_MODE="SingleNamespace"
 CUSTOMER_REGISTRY=""
-# Operator's home namespace — where the operator pod + OLM CatalogSource live.
-# Design C says BOTH our namespaces (this one + the KServe target ns) should be
-# user-configurable. Override with --operator-namespace=<ns>. Default matches
-# every prior release for byte-equivalent backwards compatibility.
-OPERATOR_NAMESPACE="kserve-operator-system"
+# Operator's home namespace is hardcoded to 'kserve-operator-system' in all
+# generated artifacts. Customers customize at DEPLOY TIME via env vars:
+#   - OPERATOR_NAMESPACE on install-operator-deployment.sh (Option B wrapper)
+#   - OPERATOR_NS on deploy-bundle.sh (Option A / OLM)
+#   - SYSTEM_NS on setup-credentials.sh
+#   - KSERVE_NS on install-operator-deployment.sh (rewrites WATCH_NAMESPACE)
+# See extra-docs/architecture-namespaces.md § 9 for the full Design C model.
 
 # 1. Parse CLI Arguments
 while [[ "$#" -gt 0 ]]; do
@@ -47,7 +49,6 @@ while [[ "$#" -gt 0 ]]; do
         -x|--multi-platform) MULTI_PLATFORM=true; AUTO_BUILD=true; shift 1 ;;
         -o|--olm) GEN_OLM_BUNDLE=true; AUTO_BUILD=true; shift 1 ;;
         --install-mode) INSTALL_MODE="$2"; shift 2 ;;
-        --operator-namespace) OPERATOR_NAMESPACE="$2"; shift 2 ;;
         --customer-registry) CUSTOMER_REGISTRY="$2"; shift 2 ;;
         --pull-secret) IMAGE_PULL_SECRET="$2"; shift 2 ;;
         --docker-server) DOCKER_SERVER="$2"; shift 2 ;;
@@ -68,7 +69,6 @@ while [[ "$#" -gt 0 ]]; do
             echo "  -x, --multi-platform Build and push for multiple architectures (linux/amd64, arm64, etc.)"
             echo "  -o, --olm            Generate and build an OLM bundle for the operator (implies -b)"
             echo "  --install-mode <mode> OLM install mode: SingleNamespace (default), OwnNamespace, AllNamespaces, MultiNamespace"
-            echo "  --operator-namespace <ns>  Operator's home namespace (default: kserve-operator-system). Bakes into the generated operator-deployment.yaml + helper-script defaults. Can also be overridden at deploy time via OPERATOR_NS / SYSTEM_NS env vars."
             echo "  --customer-registry <prefix>  Customer private registry prefix (e.g., artifactory.example.com/myrepo)"
             echo "  --pull-secret <name> Name of an existing imagePullSecret on the cluster (injected into manager spec)"
             echo "  --docker-server <url>  Registry URL for pull secret creation (default: docker.io)"
@@ -180,18 +180,21 @@ cd "${OUTPUT_DIR}"
 ${OPERATOR_SDK} init --domain="${API_DOMAIN}" --repo="${GO_MODULE}"
 ${OPERATOR_SDK} create api --group="operator" --version="v1alpha1" --kind="KServeRawMode" --resource=true --controller=true
 
-# Set the operator's runtime namespace from --operator-namespace flag (default
-# 'kserve-operator-system'). This flows through kustomize build into every
-# namespace-bearing manifest in operator-deployment.yaml (Namespace + SA + RBAC
-# + Service + Deployment). Decoupled from the Go project directory name.
+# Pin the operator's runtime namespace to 'kserve-operator-system' (canonical
+# Design C default). This flows through kustomize build into every namespace-
+# bearing manifest in operator-deployment.yaml (Namespace + SA + RBAC +
+# Service + Deployment). Customers customize at DEPLOY TIME via env vars on
+# the helper scripts — see the OPERATOR_NAMESPACE / OPERATOR_NS / SYSTEM_NS /
+# KSERVE_NS env vars in install-operator-deployment.sh / deploy-bundle.sh /
+# setup-credentials.sh.
 KUSTOMIZATION_FILE="config/default/kustomization.yaml"
 if [ -f "${KUSTOMIZATION_FILE}" ]; then
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        sed -i '' "s|^namespace: .*$|namespace: ${OPERATOR_NAMESPACE}|" "${KUSTOMIZATION_FILE}"
+        sed -i '' "s|^namespace: .*$|namespace: kserve-operator-system|" "${KUSTOMIZATION_FILE}"
     else
-        sed -i "s|^namespace: .*$|namespace: ${OPERATOR_NAMESPACE}|" "${KUSTOMIZATION_FILE}"
+        sed -i "s|^namespace: .*$|namespace: kserve-operator-system|" "${KUSTOMIZATION_FILE}"
     fi
-    echo "Kustomize namespace pinned to: ${OPERATOR_NAMESPACE}"
+    echo "Kustomize namespace pinned to: kserve-operator-system"
 else
     echo "WARNING: ${KUSTOMIZATION_FILE} not found — kustomize namespace will use operator-sdk default."
 fi
@@ -707,8 +710,7 @@ MIRROR_EOF
 #   Prerequisites:
 #     - OLM installed (operator-sdk olm install)
 #     - Operator's home namespace created (default 'kserve-operator-system';
-#       override at build time via --operator-namespace, or at deploy time
-#       via OPERATOR_NS env var)
+#       override at deploy time via OPERATOR_NS env var)
 #     - The KServe target namespace (default 'kserve') created
 #   To uninstall: operator-sdk cleanup ${TARGET_DIR_NAME} -n \${OPERATOR_NS}
 #
@@ -720,8 +722,8 @@ MIRROR_EOF
 #   bash deploy-bundle.sh [pull-secret-name]
 #
 # Environment variables:
-#   OPERATOR_NS  Operator's home namespace (default: '__OPERATOR_NS__' baked
-#                in at build time). Override at deploy time:
+#   OPERATOR_NS  Operator's home namespace (default 'kserve-operator-system').
+#                Override at deploy time:
 #                  OPERATOR_NS=my-ops bash deploy-bundle.sh
 #   KSERVE_NS    KServe target namespace (default: 'kserve'). Override to
 #                install KServe into a custom-named namespace.
@@ -729,7 +731,7 @@ MIRROR_EOF
 set -e
 
 BUNDLE_IMAGE="${CUSTOMER_BUNDLE}"
-OPERATOR_NS="\${OPERATOR_NS:-__OPERATOR_NS__}"
+OPERATOR_NS="\${OPERATOR_NS:-kserve-operator-system}"
 KSERVE_NS="\${KSERVE_NS:-kserve}"
 PULL_SECRET="\${1:-}"
 
@@ -779,14 +781,6 @@ case "\$(echo "\${CHOICE}" | tr '[:lower:]' '[:upper:]')" in
     ;;
 esac
 DEPLOY_EOF
-        # Substitute the build-time __OPERATOR_NS__ placeholder. Customer can
-        # still override at deploy time via OPERATOR_NS env var (the heredoc
-        # uses ${OPERATOR_NS:-__OPERATOR_NS__} so the env var wins).
-        if [[ "$OSTYPE" == "darwin"* ]]; then
-            sed -i '' "s|__OPERATOR_NS__|${OPERATOR_NAMESPACE}|g" "${PACKAGE_DIR}/deploy-bundle.sh"
-        else
-            sed -i "s|__OPERATOR_NS__|${OPERATOR_NAMESPACE}|g" "${PACKAGE_DIR}/deploy-bundle.sh"
-        fi
         chmod +x "${PACKAGE_DIR}/deploy-bundle.sh"
         echo "Generated deploy-bundle.sh — customer runs this to install via OLM bundle or direct manifest."
     fi
@@ -847,10 +841,10 @@ SECRET_NAME="__SECRET_NAME__"
 DOCKER_SERVER="docker.io"
 DOCKER_USERNAME=""
 DOCKER_PASSWORD=""
-# Operator's home namespace. Baked-in default comes from the generator's
-# --operator-namespace flag at build time. Customer can override at runtime
-# via SYSTEM_NS env var (e.g. SYSTEM_NS=my-ops bash setup-credentials.sh ...).
-SYSTEM_NS="${SYSTEM_NS:-__SYSTEM_NS__}"
+# Operator's home namespace. Default 'kserve-operator-system'; customer
+# can override at runtime via SYSTEM_NS env var
+# (e.g. SYSTEM_NS=my-ops bash setup-credentials.sh ...).
+SYSTEM_NS="${SYSTEM_NS:-kserve-operator-system}"
 
 # Parse CLI args
 while [[ $# -gt 0 ]]; do
@@ -985,21 +979,13 @@ echo ""
 echo "   # Option B — direct manifest (no OLM):"
 echo "   kubectl apply -f operator-deployment.yaml"
 CREDS_EOF
-# Inject generator-time values: secret name + system namespace (from
-# --operator-namespace flag; defaults to 'kserve-operator-system'). The
-# setup-credentials.sh heredoc uses ${SYSTEM_NS:-__SYSTEM_NS__} so the
-# baked-in value is just the default — customer can override at runtime
-# via SYSTEM_NS env var.
+# Inject generator-time secret name. (SYSTEM_NS is now inlined as
+# 'kserve-operator-system' directly in the heredoc; customers override at
+# runtime via the SYSTEM_NS env var.)
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    sed -i '' \
-        -e "s|__SECRET_NAME__|${SECRET_NAME}|g" \
-        -e "s|__SYSTEM_NS__|${OPERATOR_NAMESPACE}|g" \
-        "${PACKAGE_DIR}/setup-credentials.sh"
+    sed -i '' "s|__SECRET_NAME__|${SECRET_NAME}|g" "${PACKAGE_DIR}/setup-credentials.sh"
 else
-    sed -i \
-        -e "s|__SECRET_NAME__|${SECRET_NAME}|g" \
-        -e "s|__SYSTEM_NS__|${OPERATOR_NAMESPACE}|g" \
-        "${PACKAGE_DIR}/setup-credentials.sh"
+    sed -i "s|__SECRET_NAME__|${SECRET_NAME}|g" "${PACKAGE_DIR}/setup-credentials.sh"
 fi
 chmod +x "${PACKAGE_DIR}/setup-credentials.sh"
 echo "Generated setup-credentials.sh in the customer package (credentials provided at runtime — not embedded)."
@@ -1007,9 +993,9 @@ echo "Generated setup-credentials.sh in the customer package (credentials provid
 # Generate install-operator-deployment.sh — pure deploy-time namespace-rewrite
 # wrapper for Option B (kubectl apply -f operator-deployment.yaml). Mirrors
 # the install.sh Python-YAML-walk pattern from kserve-raw-base/install.sh.tmpl
-# (Issue #1 fix). Makes the operator namespace truly deploy-time-configurable
-# without regenerating the package. The baked-in default (__OPERATOR_NS_DEFAULT__)
-# is substituted from the --operator-namespace flag at generator time.
+# (Issue #1 fix). The baked default in operator-deployment.yaml is
+# 'kserve-operator-system'; customers customize at deploy time via the
+# OPERATOR_NAMESPACE and/or KSERVE_NS env vars on this script.
 cat > "${PACKAGE_DIR}/install-operator-deployment.sh" <<'INSTALL_OP_EOF'
 #!/bin/bash
 # =============================================================================
@@ -1065,7 +1051,7 @@ cat > "${PACKAGE_DIR}/install-operator-deployment.sh" <<'INSTALL_OP_EOF'
 # =============================================================================
 set -e
 
-OPERATOR_NS_DEFAULT="__OPERATOR_NS_DEFAULT__"
+OPERATOR_NS_DEFAULT="kserve-operator-system"
 OPERATOR_NAMESPACE="${OPERATOR_NAMESPACE:-${OPERATOR_NS_DEFAULT}}"
 # KSERVE_NS, if set, rewrites the Deployment's WATCH_NAMESPACE env var to
 # point at the user's chosen KServe target namespace. Empty (the default)
@@ -1209,13 +1195,6 @@ else
     echo "  kubectl get pods -n ${OPERATOR_NAMESPACE}" >&2
 fi
 INSTALL_OP_EOF
-# Substitute the build-time __OPERATOR_NS_DEFAULT__ placeholder with the value
-# of --operator-namespace (defaults to 'kserve-operator-system').
-if [[ "$OSTYPE" == "darwin"* ]]; then
-    sed -i '' "s|__OPERATOR_NS_DEFAULT__|${OPERATOR_NAMESPACE}|g" "${PACKAGE_DIR}/install-operator-deployment.sh"
-else
-    sed -i "s|__OPERATOR_NS_DEFAULT__|${OPERATOR_NAMESPACE}|g" "${PACKAGE_DIR}/install-operator-deployment.sh"
-fi
 chmod +x "${PACKAGE_DIR}/install-operator-deployment.sh"
 echo "Generated install-operator-deployment.sh — Option B deploy-time namespace rewrite wrapper."
 
@@ -1375,13 +1354,13 @@ if [ "$GEN_OLM_BUNDLE" = true ]; then
         echo ""
         echo "  …or run operator-sdk directly against the customer registry:"
         echo "  operator-sdk run bundle ${CUSTOMER_BUNDLE} \\"
-        echo "    --namespace ${OPERATOR_NAMESPACE} \\"
+        echo "    --namespace kserve-operator-system \\"
         echo "    --install-mode SingleNamespace=kserve \\"
         echo "    --pull-secret-name dockerhub-creds"
     else
         echo "To deploy via OLM, execute the following command:"
         echo "  operator-sdk run bundle ${IMAGE_TAG}-bundle \\"
-        echo "    --namespace ${OPERATOR_NAMESPACE} \\"
+        echo "    --namespace kserve-operator-system \\"
         echo "    --install-mode SingleNamespace=kserve"
     fi
 fi
