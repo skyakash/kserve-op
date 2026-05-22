@@ -67,9 +67,16 @@ kubectl delete llminferenceservice llmisvc-smoke
 
 ---
 
-## Phase 2: real LLM inference (out of scope for this branch)
+## Phase 2: real LLM inference
 
-To actually serve an LLM, you need **two additional prerequisites** plus a real model. This branch documents the path but does not ship a tested sample for it (the smaller models are still ~500 MB – 2 GB of RAM, beyond typical Docker Desktop / kind comfort).
+To actually serve an LLM, you need **a real model URI** plus optionally Gateway API for external routing. Two validation tests in [`0.16-test-report.md`](0.16-test-report.md) cover this end-to-end:
+
+- **[T23](0.16-test-report.md)** — TinyLlama-1.1B with in-cluster Service URL (no Gateway API needed). Validates the inference path itself.
+- **[T24 (deferred)](0.16-test-report.md)** — TinyLlama-1.1B with Gateway API + envoy-gateway + HTTPRoute for external routing.
+
+> **Istio vs Gateway API:** KServe RawDeployment is **Istio-free by design** — this branch's whole value prop. For LLMInferenceService external routing, **Gateway API HTTPRoute** is the path (NOT Istio VirtualService). Without Gateway API installed (the T23 path), the LLM controller skips HTTPRoute creation gracefully; the model is reachable via the in-cluster `<svc>.<ns>.svc.cluster.local` URL only — which is sufficient for inference validation.
+
+The two prerequisites for full Phase 2 (Gateway API path) are documented below.
 
 ### Prerequisite 1: install Gateway API CRDs
 
