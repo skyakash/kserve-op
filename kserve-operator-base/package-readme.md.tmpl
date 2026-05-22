@@ -16,9 +16,9 @@ operator-sdk run bundle <your-bundle-image> --pull-secret-name docker-pull-secre
 # 4. Watch progress (Ready in ~60s)
 kubectl get kserverawmode -A -w
 
-# 5. Deploy and test the Iris model
-kubectl apply -f 06-sample-model/sklearn-iris.yaml
-kubectl get isvc sklearn-iris -w   # wait for READY=True, then:
+# 5. Deploy and test the Iris model (workload ns — Design D #3, default 'default')
+kubectl apply -n "${KSERVE_WORKLOAD_NS:-default}" -f 06-sample-model/sklearn-iris.yaml
+kubectl get isvc sklearn-iris -n "${KSERVE_WORKLOAD_NS:-default}" -w   # wait for READY=True, then:
 kubectl run --rm -i curl-test --image=curlimages/curl --restart=Never -- \
   curl -s -H "Content-Type: application/json" \
   -d '{"instances":[[6.8,2.8,4.8,1.4]]}' \
@@ -42,16 +42,16 @@ This package contains the fully compiled deployment manifests required to instal
 
 If the operator image is hosted on a private registry (e.g. Docker Hub with auth), a pull secret must exist in a few namespaces before the operator can pull its own controller image.
 
-**Namespace lifecycle — Design C says we own exactly 2 namespaces, regardless of deploy path.**
+**Namespace lifecycle — Design D says we logically own 3 namespaces (all configurable at deploy time).**
 
-**Namespaces we own:**
+**Namespaces:**
 
-| Namespace | Created by | Purpose |
-|---|---|---|
-| `default` | Kubernetes (always exists) | Sample workloads (e.g. iris ISVC) |
-| `cert-manager` | User (cluster prerequisite — `kubectl apply -f cert-manager.yaml`) | cert-manager webhook + controller (pre-install) |
-| `kserve-operator-system` (default; configurable) | User OR `kubectl apply -f operator-deployment.yaml` | Operator pod home; OLM CatalogSource pod (Option A only) |
-| `<KServe ns>` (default `kserve`; configurable) | User (before deploy) | KServe runtime (controllers, webhooks, ConfigMap); `KServeRawMode` CR lives here (Design C co-location) |
+| # | Namespace | Created by | Purpose |
+|---|---|---|---|
+| | `cert-manager` | User (cluster prerequisite — `kubectl apply -f cert-manager.yaml`) | cert-manager webhook + controller (pre-install) |
+| 1 | `kserve-operator-system` (Design D #1, default; `OPERATOR_NAMESPACE`/`OPERATOR_NS`/`SYSTEM_NS` to override) | User OR `kubectl apply -f operator-deployment.yaml` | Operator pod home; OLM CatalogSource pod (Option A only) |
+| 2 | `kserve` (Design D #2, default; `KSERVE_NS`/`KSERVE_NAMESPACE` to override) | User (before deploy) | KServe controllers + webhooks + `KServeRawMode` CR. **NOT where ISVCs live.** |
+| 3 | `default` (Design D #3, default; `KSERVE_WORKLOAD_NS` to override; comma-separated multi-ns supported) | Kubernetes (always exists) | InferenceServices, LLMInferenceServices, predictor pods, model PVCs |
 
 **OLM Infrastructure (Option A only — not ours):**
 
@@ -60,7 +60,7 @@ If the operator image is hosted on a private registry (e.g. Docker Hub with auth
 | `olm` | OLM controller, catalog-operator, packageserver. Created by `operator-sdk olm install`. Pre-exists regardless of our operator. We never touch it. |
 | `operators` | Default global-operators OperatorGroup. Created by `operator-sdk olm install`. We don't use it. |
 
-See [`extra-docs/architecture-namespaces.md` § 9](../extra-docs/architecture-namespaces.md#9-design-c-footprint-always-2-namespaces-of-ours) for the full Design C rationale (why exactly 2 namespaces, why OLM's are infrastructure).
+See [`extra-docs/design-d-three-namespace-model.md`](../extra-docs/design-d-three-namespace-model.md) for the canonical Architecture Decision Record (the bug Design D fixes, alternatives considered, non-goals).
 
 ### Using `setup-credentials.sh` (if provided in this package)
 
@@ -69,25 +69,30 @@ If this package was generated with `--docker-username` and `--docker-password`, 
 **For direct manifest deploy (Option B):**
 ```bash
 kubectl apply -f operator-deployment.yaml   # creates kserve-operator-system namespace
-bash setup-credentials.sh                   # creates pull secret in default + kserve-operator-system
+bash setup-credentials.sh                   # see "pull-secret footprint" below
 # Operator auto-creates KServeRawMode CR — installation begins automatically
 ```
 
 **For OLM bundle deploy (Option A):**
 ```bash
 operator-sdk olm install                    # creates olm + operators namespaces (OLM infrastructure — not ours)
-bash setup-credentials.sh                   # creates pull secret in default + kserve-operator-system
+bash setup-credentials.sh                   # see "pull-secret footprint" below
 operator-sdk run bundle <your-bundle-image> --pull-secret-name docker-pull-secret
 # Operator auto-creates KServeRawMode CR — installation begins automatically
 ```
 
-> Both deploy paths use the same 2-namespace pull-secret footprint (`default` + the operator's home namespace). OLM's own namespaces (`olm`, `operators`) don't need our pull secret — OLM uses its own catalog auth for everything it does.
+> **Pull-secret footprint (Design D):** always in `$SYSTEM_NS` (operator home, default `kserve-operator-system`). Also in each `$KSERVE_WORKLOAD_NS` (workload ns, default `default`, comma-separated multi-ns supported) when the package was built with `--customer-registry` OR `--also-workload-ns` is passed. OLM's own namespaces (`olm`, `operators`) don't need our pull secret — OLM uses its own catalog auth.
 
 ### Manual pull secret creation (without setup-credentials.sh)
 
-If `setup-credentials.sh` was not generated, create the secret manually (Design C — 2 namespaces only):
+If `setup-credentials.sh` was not generated, create the secret manually (Design D footprint):
 ```bash
-for ns in default kserve-operator-system; do
+# Always: operator home ns.
+NSES=(kserve-operator-system)
+# If you're using a private registry for predictor images, also each workload ns:
+# NSES+=(default team-a team-b)
+
+for ns in "${NSES[@]}"; do
   kubectl create secret docker-registry docker-pull-secret \
     --docker-server=<registry> \
     --docker-username=<user> \
@@ -135,26 +140,37 @@ operator-sdk run bundle <your-bundle-image-tag> \
 
 ---
 
-### Customizing namespaces (Design C: both deploy-time configurable)
+### Customizing namespaces (Design D: all 3 deploy-time configurable)
 
-The baked default in this package is `kserve-operator-system` for the operator's home + `kserve` for the KServe target. Both can be customized **at deploy time** via env vars on the helper scripts — one package, any namespace topology, no rebuild needed:
+Design D defines three namespaces (operator-home + runtime-control + workload), each independently configurable at deploy time. One package serves any topology — no rebuild needed.
 
 | Script | Env var | Purpose |
 |---|---|---|
-| `install-operator-deployment.sh` *(Option B wrapper)* | `OPERATOR_NAMESPACE=<ns>` | Operator lands in `<ns>` instead of the baked default. Python YAML walk rewrites every namespace ref in `operator-deployment.yaml` before `kubectl apply -f -`. |
-| `install-operator-deployment.sh` *(Option B wrapper)* | `KSERVE_NS=<ns>` | KServe runtime + CR land in `<ns>` instead of `kserve`. Rewrites the Deployment's `WATCH_NAMESPACE` env var from OLM-downward-API source to a literal value. |
-| `deploy-bundle.sh` *(Option A wrapper)* | `OPERATOR_NS=<ns>` | Same intent for OLM path; `operator-sdk run bundle --namespace=<ns>` handles substitution at install time. |
-| `setup-credentials.sh` | `SYSTEM_NS=<ns>` | Tells the script where to create the operator pull secret (defaults to baked-in value). |
+| `install-operator-deployment.sh` *(Option B wrapper)* | `OPERATOR_NAMESPACE=<ns>` | Operator (Design D #1) lands in `<ns>` instead of `kserve-operator-system`. Python YAML walk rewrites every namespace ref in `operator-deployment.yaml`. |
+| `install-operator-deployment.sh` *(Option B wrapper)* | `KSERVE_NS=<ns>` | KServe controllers + CR (Design D #2) land in `<ns>` instead of `kserve`. Rewrites the Deployment's `WATCH_NAMESPACE` env var. |
+| `deploy-bundle.sh` *(Option A wrapper)* | `OPERATOR_NS=<ns>` | Same intent for OLM path. |
+| `setup-credentials.sh` | `SYSTEM_NS=<ns>` | Tells the script where to create the operator pull secret. |
+| `setup-credentials.sh` | `KSERVE_WORKLOAD_NS=<ns>` or `<ns1>,<ns2>,...` | Workload ns(es) (Design D #3) where ISVCs live. Comma-separated for multi-team. Default `default`. |
+| `kubectl apply -n <ns> -f sklearn-iris.yaml` | *(per-command)* | Workload ns at apply time — defaults to `default`. |
 
-**Combined invocation (Option B example):**
+**Combined invocation (Option B example with all three namespaces customized):**
 ```bash
+# Create the namespaces first
+kubectl create ns ops-custom servewell team-fraud
+
+# Pull secret (when --customer-registry was used at build time, also lands in team-fraud)
+SYSTEM_NS=ops-custom KSERVE_WORKLOAD_NS=team-fraud \
+    bash setup-credentials.sh --user <u> --pass <p>
+
+# Operator + runtime in custom namespaces
 OPERATOR_NAMESPACE=ops-custom KSERVE_NS=servewell \
     bash install-operator-deployment.sh
-# Operator pod lands in 'ops-custom'; KServeRawMode CR + KServe runtime in 'servewell'.
-# One generated package supports any namespace topology.
+
+# Deploy ISVCs into the workload ns
+kubectl apply -n team-fraud -f 06-sample-model/sklearn-iris.yaml
 ```
 
-See [`extra-docs/architecture-namespaces.md` § 9](../extra-docs/architecture-namespaces.md#9-design-c-footprint-always-2-namespaces-of-ours-both-user-configurable) for the full design rationale (why these 4 override mechanisms; how they interact).
+See [`extra-docs/design-d-three-namespace-model.md`](../extra-docs/design-d-three-namespace-model.md) for the canonical Architecture Decision Record.
 
 ---
 
@@ -195,14 +211,14 @@ kubectl get crd | grep kserve
 
 Once the `kserve` namespace has populated and all controller manager pods indicate they are Ready, you can verify inference capabilities:
 
-1. **Deploy Sample Model**:
+1. **Deploy Sample Model** (workload ns — Design D #3):
    ```bash
-   kubectl apply -f 06-sample-model/sklearn-iris.yaml
+   kubectl apply -n "${KSERVE_WORKLOAD_NS:-default}" -f 06-sample-model/sklearn-iris.yaml
    ```
 
 2. **Wait for Predictor Check**:
    ```bash
-   kubectl get pods -l serving.kserve.io/inferenceservice=sklearn-iris
+   kubectl get pods -n "${KSERVE_WORKLOAD_NS:-default}" -l serving.kserve.io/inferenceservice=sklearn-iris
    ```
    Wait until the `sklearn-iris-predictor-<hash>` pod is `Running (1/1)`.
 

@@ -278,14 +278,27 @@ flowchart TB
 
 ---
 
-## 7. Recommended design — Design C
+## 7. Recommended design — Design D (three-namespace model)
 
-### Why
+> **Note (2026-05-22):** This section was **Design C** until T19 surfaced that ISVCs deployed in the runtime-control namespace can't get the storage-initializer injected — upstream KServe's pod-mutator webhook has a `namespaceSelector: control-plane DoesNotExist` guard that filters out the `kserve` namespace. We pivoted to **Design D**, which separates the workload namespace from the runtime-control namespace. The full Architecture Decision Record is in [`design-d-three-namespace-model.md`](design-d-three-namespace-model.md). The historical "Design C" three-section is kept at the bottom of §7 (under "Historical: Design C") for context. **Design D supersedes Design C in this doc and in code.**
 
-- **One source of truth.** The user picks a namespace name once (when creating the namespace and the OperatorGroup). The CR's `metadata.namespace` IS the configuration — nothing else to set, no chance of mismatch.
-- **No extra CRD knob.** We can drop `spec.kserveNamespace` entirely — the CR's own location tells the operator everything.
-- **Locality.** A user troubleshooting the install runs `kubectl get all -n my-kserve` and sees the CR + KServe components together.
-- **Defaults are easy.** A user who doesn't want to think about it just creates `kserve` and follows the unchanged copy-paste recipe.
+### Three namespaces
+
+| # | Role | Default | Override env var (deploy-time) | Owner | What lives there |
+|---|---|---|---|---|---|
+| 1 | **Operator-home** | `kserve-operator-system` | `OPERATOR_NAMESPACE` / `OPERATOR_NS` / `SYSTEM_NS` | Platform / SRE | Operator pod + RBAC + pull secret |
+| 2 | **Runtime-control** | `kserve` | `KSERVE_NS` / `KSERVE_NAMESPACE` | Platform / SRE | KServe controllers + webhooks + `KServeRawMode` CR; cluster-scoped resources (CRDs, ClusterServingRuntimes) logically owned here |
+| 3 | **Workload** | `default` | `KSERVE_WORKLOAD_NS` (comma-separated multi-ns supported) | App team / data scientist | `InferenceService`, `LLMInferenceService`, predictor pods, model PVCs |
+
+**Rule:** ns #1 and #2 are singletons per cluster; ns #3 is plural (multi-tenant ready). No resource of ours (operator, controllers, webhooks, CRDs) lives in ns #3. No user workload lives in ns #1 or #2.
+
+### Why three namespaces
+
+- **One source of truth per concern.** Operator lifecycle, KServe lifecycle, workload lifecycle — three independent owners, three independent namespaces.
+- **No extra CRD knob.** The CR's `metadata.namespace` still IS the runtime-control configuration. No `spec.kserveNamespace` field.
+- **Workload-vs-control separation** matches cloud-native conventions (Istio, Knative, Cert-Manager, Argo, Tekton, GKE Config Connector). Blast radius isolation, RBAC granularity, quota separation, independent upgrade lifecycles, multi-tenant readiness.
+- **Aligns with upstream KServe.** The pod-mutator webhook's anti-self-injection guard assumes workloads live in a separate ns from the controllers. We respect the assumption; we don't fight upstream.
+- **Defaults are easy.** A user who doesn't want to think about it gets `kserve-operator-system` + `kserve` + `default` (workloads in `default` ns). This is what every test T01-T16 actually did by accident — Design D codifies the de facto pattern.
 
 ### How the operator derives the target namespace
 
@@ -368,38 +381,41 @@ The original Path 1 plan kept a separate `spec.kserveNamespace` field. This desi
 
 ---
 
-## 9. Design C footprint: always 2 namespaces of ours (both user-configurable)
+## 9. Design D footprint: 3 namespaces of ours (all user-configurable at deploy time)
 
-A common point of confusion: when reading the OLM-deploy path (Option A) someone might count **4 namespaces** — `olm`, `operators`, `kserve-operator-system`, and `<KServe ns>` — and think the operator is "namespace-heavy." It is not. **Design C touches at most 2 namespaces we own**, regardless of which deploy path the customer picks:
+A common point of confusion: when reading the OLM-deploy path (Option A) someone might count **5 namespaces** — `olm`, `operators`, `kserve-operator-system`, `<KServe ns>`, and `<workload ns>` — and think the operator is "namespace-heavy." It is not. **Design D involves 3 namespaces we logically own**, regardless of which deploy path the customer picks:
 
 | Namespace | Owner | What lives there |
 |---|---|---|
-| `olm` | OLM project (created by `operator-sdk olm install`) | OLM controller, catalog operator, packageserver |
-| `operators` | OLM project (created by `operator-sdk olm install`) | The default global-operators OperatorGroup (we don't use it) |
-| `kserve-operator-system` | **Us** | KServeRawMode operator pod + OLM CatalogSource pod for our bundle |
-| `<KServe ns>` (e.g. `kserve`, `servewell`) | **Us** | KServe controllers + KServeRawMode CR + ISVCs (Design C: co-located) |
+| `olm`, `operators` | OLM project (created by `operator-sdk olm install`) | OLM infrastructure (we don't touch) |
+| `kserve-operator-system` (Design D #1) | **Us** | KServeRawMode operator pod + OLM CatalogSource pod for our bundle |
+| `kserve` (or `<KServe ns>`, Design D #2) | **Us** | KServe controllers + webhooks + `KServeRawMode` CR + cluster-scoped resources |
+| `default` (or `<KSERVE_WORKLOAD_NS>`, Design D #3) | **User app team** | ISVCs + predictor pods + model PVCs |
 
-**The two OLM namespaces are infrastructure** — `operator-sdk olm install` creates them whether we exist or not. Pre-existing OLM users already have them. They host OLM, not us; we don't put anything there. We don't even put pull secrets there — the bundle pull uses `--pull-secret-name=<name>` against the secret we created in `kserve-operator-system`, and OLM uses its own catalog auth (OperatorHub credentials) for everything else.
+**The two OLM namespaces are infrastructure** — `operator-sdk olm install` creates them whether we exist or not. Pre-existing OLM users already have them. They host OLM, not us.
 
-**Therefore the customer footprint is always:**
-- Option A (OLM): 2 namespaces of ours + 2 OLM-infrastructure namespaces (only if they didn't already exist)
-- Option B (direct manifest): 2 namespaces of ours
-- Option C (`install.sh`): 1 namespace (the operator is not deployed)
+**Customer footprint is always:**
+- Option A (OLM): 3 namespaces of ours + 2 OLM-infrastructure namespaces (only if they didn't already exist)
+- Option B (direct manifest): 3 namespaces of ours
+- Option C (`install.sh`): 2 namespaces (the operator is not deployed; KServe controllers + workload)
 
-`setup-credentials.sh` reflects this honestly — it creates pull secrets in exactly 2 namespaces (`default` + the operator's system namespace). Earlier versions also targeted `olm` and `operators` defensively; those secrets were never consumed by any production code path and have been removed. The `--non-olm` flag (introduced briefly during Issue #6 troubleshooting) is now a deprecated no-op — both deploy paths converge on the same 2-namespace target.
+`setup-credentials.sh` reflects Design D: pull secret lands in `SYSTEM_NS` always; in each `KSERVE_WORKLOAD_NS` ns only when the package was built with `--customer-registry` (or `--also-workload-ns` is passed at deploy time). Public-image predictors don't need pull secrets in workload ns. The `--non-olm` flag is still a deprecated no-op for backwards compatibility.
 
-### Both namespaces are user-configurable
+### All three namespaces are user-configurable
 
-Both Design C namespaces are **user-configurable at DEPLOY TIME ONLY**. The baked default in all generated artifacts is `kserve-operator-system` for the operator's home and `kserve` for the KServe target — customers override at apply time via env vars on the helper scripts, no rebuild needed.
+All three Design D namespaces are **user-configurable at DEPLOY TIME ONLY**. The baked default in all generated artifacts is `kserve-operator-system` + `kserve` + `default` — customers override at apply time via env vars on the helper scripts, no rebuild needed.
 
-| Namespace | How to configure (deploy-time only) | Where it's used |
-|---|---|---|
-| **`<operator ns>`** (default `kserve-operator-system`) | `OPERATOR_NAMESPACE=<ns>` env var on `install-operator-deployment.sh` (Option B wrapper rewrites the YAML on-the-fly). `OPERATOR_NS=<ns>` env var on `deploy-bundle.sh` (Option A — passes through to `operator-sdk run bundle --namespace=<ns>`). `SYSTEM_NS=<ns>` env var on `setup-credentials.sh` (where to create the pull secret). | Operator pod home; OLM CatalogSource pod for the bundle. |
-| **`<KServe ns>`** (default `kserve`) | `KSERVE_NS=<ns>` env var on `install-operator-deployment.sh` (Option B — rewrites Deployment's WATCH_NAMESPACE env). `--install-mode SingleNamespace=<ns>` on `operator-sdk run bundle` (Option A). `KSERVE_NAMESPACE=<ns>` env var on `install.sh` (Option C). | KServe controller pods; the `KServeRawMode` CR; ISVCs (via Design C co-location). |
+| Namespace | Default | How to configure (deploy-time only) | Where it's used |
+|---|---|---|---|
+| **Operator-home** (Design D #1) | `kserve-operator-system` | `OPERATOR_NAMESPACE=<ns>` env var on `install-operator-deployment.sh` (Option B wrapper rewrites the YAML on-the-fly). `OPERATOR_NS=<ns>` env var on `deploy-bundle.sh` (Option A — passes through to `operator-sdk run bundle --namespace=<ns>`). `SYSTEM_NS=<ns>` env var on `setup-credentials.sh`. | Operator pod home; OLM CatalogSource pod for the bundle. |
+| **Runtime-control** (Design D #2) | `kserve` | `KSERVE_NS=<ns>` env var on `install-operator-deployment.sh` (Option B — rewrites Deployment's WATCH_NAMESPACE env). `--install-mode SingleNamespace=<ns>` on `operator-sdk run bundle` (Option A). `KSERVE_NAMESPACE=<ns>` env var on `install.sh` (Option C). | KServe controller pods; the `KServeRawMode` CR. **NOT where ISVCs live.** |
+| **Workload** (Design D #3) | `default` | `KSERVE_WORKLOAD_NS=<ns1>,<ns2>,...` env var on `setup-credentials.sh` (comma-separated; pull-secret placement). At ISVC deploy time: `kubectl -n "${KSERVE_WORKLOAD_NS:-default}" apply -f sklearn-iris.yaml`. | InferenceServices, LLMInferenceServices, predictor pods, model PVCs. |
 
-**Backwards compatibility:** all existing CI scripts and customer invocations that don't set any of these env vars get byte-identical output to before — the operator still lands in `kserve-operator-system` and KServe in `kserve` by default. Adopt the env-var overrides only if you have a naming collision or org-naming convention to honor.
+**Backwards compatibility:** all existing CI scripts and customer invocations that don't set any of these env vars get byte-identical output to before — operator in `kserve-operator-system`, KServe in `kserve`, ISVCs in `default` (which was also the de facto pattern under Design C since all `kubectl apply -f sklearn-iris.yaml` calls were unqualified). Adopt the env-var overrides only if you have naming collisions or org-naming conventions to honor.
 
-**Historical note:** A build-time `--operator-namespace=<ns>` flag briefly existed (commit `0ef4d9d`) that let an org bake a corporate-default namespace into the shipped package. It was removed in a follow-up cleanup because (a) the deploy-time env vars strictly dominate it in flexibility, and (b) two parallel ways to set the same thing creates customer confusion. KServe-side namespace selection follows the same pure-deploy-time pattern (`KSERVE_NAMESPACE` env var on `install.sh.tmpl:7`).
+**Historical note (Design C):** A two-namespace model briefly existed that co-located ISVCs with the KServe controller in one namespace. It was superseded by Design D after T19 surfaced that the upstream pod-mutator webhook's `namespaceSelector: control-plane DoesNotExist` guard filters out the runtime-control ns (which carries `control-plane: kserve-controller-manager` label inherited from upstream's Namespace manifest at `p-kserve-raw/04-kserve-core/kserve-core.yaml:1-8`). Storage-initializer was never injected, predictor crashed. See [`design-d-three-namespace-model.md`](design-d-three-namespace-model.md) for the full ADR including alternatives considered and rejected (strip the label / drop the manifest / etc).
+
+**Historical note (build-time flag):** A build-time `--operator-namespace=<ns>` flag briefly existed (commit `0ef4d9d`) — removed in `cbe9838` because deploy-time env vars dominate it in flexibility and two parallel ways to set the same thing creates customer confusion.
 
 ### Pure deploy-time symmetry
 

@@ -87,7 +87,7 @@ If the operator will be deployed to a customer environment with a **private regi
 > ℹ️ `--pull-secret` sets the pull secret name baked into the generated scripts. Credentials are **never embedded** — they are provided at runtime by the customer.
 
 The generated package (`p-kserve-operator-package/`) contains up to **four** helper scripts:
-- `setup-credentials.sh` — creates pull secrets in exactly 2 namespaces (`default` + the operator's home ns) per the Design C footprint. Defaults to `kserve-operator-system`; override at script invocation time via `SYSTEM_NS=<ns>` env var. *(always generated; see [`extra-docs/architecture-namespaces.md` § 9](extra-docs/architecture-namespaces.md#9-design-c-footprint-always-2-namespaces-of-ours))*
+- `setup-credentials.sh` — creates pull secrets per the Design D footprint. Always in `SYSTEM_NS` (operator's home ns, default `kserve-operator-system`); also in each `KSERVE_WORKLOAD_NS` (workload namespace(s), default `default`, comma-separated multi-ns supported) when the package was built with `--customer-registry` or `--also-workload-ns` is passed. Override defaults at script invocation via `SYSTEM_NS=<ns>` and `KSERVE_WORKLOAD_NS=<ns1>,<ns2>,...` env vars. *(always generated; see [`extra-docs/design-d-three-namespace-model.md`](extra-docs/design-d-three-namespace-model.md))*
 - `enable-ingress.sh` — patches KServe to enable Kubernetes Ingress creation; restarts the controller. Used when you want external-URL access via an ingress controller. *(always generated)*
 - `mirror-images.sh` — copies operator + bundle images from the build registry to a customer registry (3 modes: online, archive, load) *(only with `--customer-registry`)*
 - `deploy-bundle.sh` — one-command OLM install helper that wraps `operator-sdk run bundle ... --install-mode SingleNamespace=${KSERVE_NS}` *(only with `--customer-registry`)*
@@ -180,30 +180,36 @@ kubectl get pods -n olm   # wait until all pods are Running
 
 ### Step 2 — Create namespaces
 
-**Both** of Design C's 2 namespaces are now user-configurable:
+**All three** of Design D's namespaces are user-configurable at deploy time. See [`extra-docs/design-d-three-namespace-model.md`](extra-docs/design-d-three-namespace-model.md) for the architecture rationale.
 
-- **Operator's home namespace** — baked default is `kserve-operator-system` in all generated artifacts. Override at **deploy time** via env vars on the helper scripts:
+- **Operator-home namespace** (Design D #1) — baked default `kserve-operator-system`. Override at **deploy time** via env vars on the helper scripts:
   - `OPERATOR_NAMESPACE=<ns>` on `install-operator-deployment.sh` (Option B wrapper)
   - `OPERATOR_NS=<ns>` on `deploy-bundle.sh` (Option A / OLM)
   - `SYSTEM_NS=<ns>` on `setup-credentials.sh` (pull-secret target)
-  - For Option A, OLM substitutes the namespace from `operator-sdk run bundle --namespace=<ns>` automatically.
-- **KServe target namespace** — defaults to `kserve`. The CR and the KServe runtime live **together** here (Design C). Pick anything (e.g. `my-kserve`) via `--install-mode SingleNamespace=<ns>` on the deploy command, or `KSERVE_NAMESPACE=<ns>` env var on `install.sh` (Option C). The operator's apply-time namespace rewriting installs KServe there.
+- **Runtime-control namespace** (Design D #2) — baked default `kserve`. Where the KServe controllers + webhooks + the `KServeRawMode` CR live. Pick a custom name via `--install-mode SingleNamespace=<ns>` (Option A), `KSERVE_NS=<ns>` env var on `install-operator-deployment.sh` (Option B), or `KSERVE_NAMESPACE=<ns>` env var on `install.sh` (Option C).
+- **Workload namespace** (Design D #3, NEW) — baked default `default`. Where the user's `InferenceService` / `LLMInferenceService` and predictor pods live. Override via `KSERVE_WORKLOAD_NS=<ns>` (single team) or `KSERVE_WORKLOAD_NS=<ns1>,<ns2>,...` (multi-team) env var on `setup-credentials.sh`, and pass `-n "${KSERVE_WORKLOAD_NS:-default}"` to your `kubectl apply` commands for ISVCs.
 
 ```bash
-# Pick the namespace name you want for KServe (default: 'kserve').
-# Both the KServeRawMode CR and the KServe runtime will live here.
+# Pick the namespace name you want for the KServe controllers (default: 'kserve').
 KSERVE_NS=kserve
 
 # Pick the namespace name you want for the operator pod (default: 'kserve-operator-system').
-# Override at deploy time with: OPERATOR_NS=<ns> bash deploy-bundle.sh ...
-# (or OPERATOR_NAMESPACE=<ns> bash install-operator-deployment.sh for Option B)
 OPERATOR_NS="${OPERATOR_NS:-kserve-operator-system}"
+
+# Pick the workload namespace(s) for your ISVCs (default: 'default').
+# Comma-separated for multi-team: KSERVE_WORKLOAD_NS=team-a,team-b,team-c.
+KSERVE_WORKLOAD_NS="${KSERVE_WORKLOAD_NS:-default}"
 
 kubectl create namespace "${KSERVE_NS}"     || true
 kubectl create namespace "${OPERATOR_NS}"   || true
+# Workload ns: 'default' always exists; create others explicitly:
+IFS=',' read -ra _WL_NSES <<<"${KSERVE_WORKLOAD_NS}"
+for ns in "${_WL_NSES[@]}"; do
+    [[ "${ns}" != "default" ]] && kubectl create namespace "${ns}" || true
+done
 ```
 
-> **Why this comes before credentials:** `setup-credentials.sh` (Step 3) creates pull secrets *inside* `${OPERATOR_NS}` and `default`. If `${OPERATOR_NS}` doesn't exist yet the operator pod's image pull will later fail with no obvious cause.
+> **Why this comes before credentials:** `setup-credentials.sh` (Step 3) creates pull secrets *inside* `${OPERATOR_NS}` (always) and each `${KSERVE_WORKLOAD_NS}` namespace (when `--customer-registry` was used at build time or `--also-workload-ns` is passed). If the target namespaces don't exist yet, the script fails-fast with a clear error pointing at the right `kubectl create namespace` command.
 
 ### Step 3 — Set up image pull credentials *(skip if images are public)*
 
@@ -217,7 +223,7 @@ bash setup-credentials.sh
 
 For the **customer-registry** flow, pass the **customer-registry** credentials here (the cluster will pull from the customer registry, not the build registry).
 
-> **Design C — 2 namespaces.** The script creates pull secrets in exactly two namespaces: `default` (for sample workloads like the iris ISVC) and `<system-ns>` (operator pod + OLM CatalogSource pod, both pull from here). OLM's `olm` + `operators` namespaces are infrastructure — they never need our pull secret because OLM uses its own catalog auth. Both deploy paths (OLM Option A + direct-manifest Option B) need the same 2 namespaces; no flag distinguishes them. (`--non-olm` is accepted as a deprecated no-op for backwards compatibility with earlier CI scripts.)
+> **Design D — pull-secret placement.** The script always creates the pull secret in `${SYSTEM_NS}` (operator pod + OLM CatalogSource pod pull from here). It additionally creates the secret in each `${KSERVE_WORKLOAD_NS}` namespace **only when** the package was built with `--customer-registry` (private predictor images need a pull secret) **or** `--also-workload-ns` is passed on the CLI. With the public-image default, workload ns gets no pull secret — over-provisioning to namespaces that never use it is avoided. OLM's `olm` + `operators` namespaces are infrastructure — they never need our pull secret. (`--non-olm` is accepted as a deprecated no-op for backwards compatibility.)
 
 ### Step 4 — Deploy the operator
 
@@ -227,9 +233,9 @@ KServe Raw Mode supports **three deploy paths**, in increasing order of simplici
 |---|---|---|---|
 | **Who manages the operator?** | OLM (CSV reconciles) | Plain Kubernetes Deployment | No operator at all — pure `kubectl apply` |
 | **Infrastructure prereq** | cert-manager + OLM (`operator-sdk olm install` brings its own `olm` + `operators` namespaces) | cert-manager | cert-manager |
-| **Namespaces you create** | 2: `<operator ns>` (default `kserve-operator-system`) + `<KServe ns>` (default `kserve`). Both configurable. | Same as Option A. | 1: `<KServe ns>` (default `kserve`, override `KSERVE_NAMESPACE=...`). |
+| **Namespaces you create** | 3 (Design D): `<operator ns>` (default `kserve-operator-system`) + `<KServe ns>` (default `kserve`) + `<workload ns>` (default `default` — already exists). All configurable. | Same as Option A. | 2: `<KServe ns>` (default `kserve`, override `KSERVE_NAMESPACE=...`) + `<workload ns>` (default `default`). |
 | **Pull-secret command** | `setup-credentials.sh` | `setup-credentials.sh` (same — no flag needed) | N/A (KServe upstream images are public) |
-| **Pull-secret target ns** | `default` + `<operator ns>` | `default` + `<operator ns>` | N/A |
+| **Pull-secret target ns** | `<operator ns>` always; `<workload ns>` only if `--customer-registry` or `--also-workload-ns` | Same as Option A | N/A |
 | **Custom KServe namespace** | yes — `--install-mode SingleNamespace=<name>` | currently bundled defaults only | yes — `KSERVE_NAMESPACE=<name> ./install.sh` |
 | **CR + auto-init** | yes (operator runs in cluster) | yes | no — operator is not deployed; KServe runs directly |
 | **Customer-facing complexity** | high (OLM concepts) | medium | low (one script, one CR-less install) |
@@ -237,7 +243,7 @@ KServe Raw Mode supports **three deploy paths**, in increasing order of simplici
 | **Steps to run** | 0 (cert-manager) → 1 (OLM) → 2 (your namespaces) → 3 (creds) → 4A → 5 → 6 | 0 → 2 (your namespaces) → 3 (creds) → 4B → 5 → 6 | 0 → run `install.sh` → 6 |
 | **Tested by** | T01, T05, T10, T11, T12, T12-LIKE-REGRESSION | T04 | T02, T03-RETEST |
 
-> **Design C (2 namespaces, always).** All three options share the same footprint OF OURS: at most 2 namespaces we create (operator home + KServe runtime). OLM's `olm` + `operators` namespaces (Option A only) are OLM infrastructure — they exist regardless of our operator and we don't put anything there. See [`extra-docs/architecture-namespaces.md`](extra-docs/architecture-namespaces.md) for the full design rationale.
+> **Design D (3 namespaces).** All three options share the same footprint OF OURS: 3 namespaces (operator home + runtime-control + workload). The workload ns is plural-allowed (`KSERVE_WORKLOAD_NS=team-a,team-b,...`) for multi-team setups. OLM's `olm` + `operators` namespaces (Option A only) are OLM infrastructure — they exist regardless of our operator and we don't put anything there. See [`extra-docs/design-d-three-namespace-model.md`](extra-docs/design-d-three-namespace-model.md) for the full ADR including the bug Design D fixes.
 
 If you don't have a strong preference, **start with Option C** — it's the fewest moving parts and works on any cluster.
 
@@ -394,11 +400,14 @@ ERROR cert-manager is required but was not found in the cluster ...
 Install cert-manager and the operator will automatically retry and proceed.
 
 ### Step 6 — Deploy and test the Iris inference model (in-cluster URL)
+
+The iris ISVC lives in the **workload namespace** (Design D #3, default `default`). Override with `KSERVE_WORKLOAD_NS=<your-ns>` env var if you've onboarded a team-specific namespace via `setup-credentials.sh`. See [`extra-docs/design-d-three-namespace-model.md`](extra-docs/design-d-three-namespace-model.md) for the three-namespace model.
+
 ```bash
-kubectl apply -f 06-sample-model/sklearn-iris.yaml
+kubectl apply -n "${KSERVE_WORKLOAD_NS:-default}" -f 06-sample-model/sklearn-iris.yaml
 
 # Wait for predictor to be ready (~30s)
-kubectl get isvc sklearn-iris -w   # wait for READY=True
+kubectl get isvc sklearn-iris -n "${KSERVE_WORKLOAD_NS:-default}" -w   # wait for READY=True
 
 # Test inference via internal cluster URL (always works without ingress)
 kubectl run --rm -i curl-test --image=curlimages/curl --restart=Never -- \
@@ -406,6 +415,8 @@ kubectl run --rm -i curl-test --image=curlimages/curl --restart=Never -- \
   -d '{"instances":[[6.8,2.8,4.8,1.4]]}' \
   http://sklearn-iris-predictor.default.svc.cluster.local/v1/models/sklearn-iris:predict
 ```
+
+> The cluster URL above assumes `KSERVE_WORKLOAD_NS=default`. For a different workload ns, the service DNS is `sklearn-iris-predictor.<your-ns>.svc.cluster.local`.
 ✅ Expected: `{"predictions":[1]}`
 
 ### Step 6b — *(Optional)* Test via external hostname (requires nginx-ingress)
@@ -443,9 +454,9 @@ grep -qF "${HOST_ENTRY}" /etc/hosts \
 
 **Recreate the InferenceService** (so KServe creates the Ingress with the new config):
 ```bash
-kubectl delete isvc sklearn-iris --ignore-not-found
-kubectl apply -f 06-sample-model/sklearn-iris.yaml
-kubectl get isvc sklearn-iris -w   # wait for READY=True
+kubectl delete isvc sklearn-iris -n "${KSERVE_WORKLOAD_NS:-default}" --ignore-not-found
+kubectl apply -n "${KSERVE_WORKLOAD_NS:-default}" -f 06-sample-model/sklearn-iris.yaml
+kubectl get isvc sklearn-iris -n "${KSERVE_WORKLOAD_NS:-default}" -w   # wait for READY=True
 ```
 
 **Verify Ingress and test:**
@@ -475,11 +486,13 @@ curl -s -H "Content-Type: application/json" \
 # any local-multinode tool like kind/k3d/minikube --nodes=3 — single-node
 # Docker Desktop cannot exercise per-node placement):
 kubectl label node <worker-1> kserve/localmodel=worker
+# LocalModelCache CRs are cluster-scoped — no -n.
 kubectl apply -f 06-sample-model/localmodelcache-nodegroup.yaml
 kubectl apply -f 06-sample-model/localmodelcache.yaml
 kubectl wait --for=jsonpath='{.status.copies.available}'=1 \
   localmodelcache/sklearn-iris-cache --timeout=180s
-kubectl apply -f 06-sample-model/localmodelcache-isvc.yaml
+# The consumer ISVC lives in the workload ns (Design D #3).
+kubectl apply -n "${KSERVE_WORKLOAD_NS:-default}" -f 06-sample-model/localmodelcache-isvc.yaml
 # Predictor pod will mount the cached PVC (no internet pull at startup).
 ```
 
@@ -491,10 +504,11 @@ kubectl apply -f 06-sample-model/localmodelcache-isvc.yaml
 `LLMInferenceService` is KServe 0.16's new resource for serving large language models via Gateway API routing. The operator package ships a **smoke-only** sample (placeholder model URI) that validates the controller wiring without requiring real LLM compute.
 
 ```bash
-kubectl apply -f 06-sample-model/llmisvc-smoke.yaml
+# LLMInferenceServices live in the workload ns (Design D #3, same as ISVCs).
+kubectl apply -n "${KSERVE_WORKLOAD_NS:-default}" -f 06-sample-model/llmisvc-smoke.yaml
 # Within ~10s, the controller creates:
-kubectl get deploy llmisvc-smoke-kserve          # Deployment (0/1, expected — placeholder model)
-kubectl get svc llmisvc-smoke-kserve-workload-svc  # Service on port 8000
+kubectl get deploy llmisvc-smoke-kserve -n "${KSERVE_WORKLOAD_NS:-default}"          # Deployment (0/1, expected — placeholder model)
+kubectl get svc llmisvc-smoke-kserve-workload-svc -n "${KSERVE_WORKLOAD_NS:-default}"  # Service on port 8000
 # The reconcile pipeline (Workload → Router → Scheduler → HTTPRoute) is logged
 # by the llmisvc controller — see GUIDE for the verification commands.
 ```

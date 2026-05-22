@@ -87,9 +87,11 @@ The localmodel-controller-manager spawns one download Job per labeled worker. Ea
 
 ### Step 3 — Deploy an ISVC that uses the cache
 
+`LocalModelCache` itself is **cluster-scoped** (no namespace), but the *consumer ISVC* lives in the workload namespace (Design D #3, default `default`). See [`design-d-three-namespace-model.md`](design-d-three-namespace-model.md).
+
 ```bash
-kubectl apply -f 06-sample-model/localmodelcache-isvc.yaml
-kubectl wait --for=condition=Ready isvc/sklearn-iris-cached -n default --timeout=300s
+kubectl apply -n "${KSERVE_WORKLOAD_NS:-default}" -f 06-sample-model/localmodelcache-isvc.yaml
+kubectl wait --for=condition=Ready isvc/sklearn-iris-cached -n "${KSERVE_WORKLOAD_NS:-default}" --timeout=300s
 ```
 
 The ISVC's `storageUri` is **the same `gs://...` URI** as the cache's `sourceModelUri`. The KServe defaults webhook recognises the match and rewrites the predictor's volume to mount the cache PVC instead of pulling from gs://. Proof of injection:

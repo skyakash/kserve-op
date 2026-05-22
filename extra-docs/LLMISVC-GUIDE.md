@@ -21,8 +21,10 @@ You should have completed Part A + Part B Steps 0–5 of [QUICK_START.md](../QUI
 
 ### Run the smoke test
 
+LLMInferenceServices live in the workload namespace (Design D #3, default `default`). See [`design-d-three-namespace-model.md`](design-d-three-namespace-model.md).
+
 ```bash
-kubectl apply -f 06-sample-model/llmisvc-smoke.yaml
+kubectl apply -n "${KSERVE_WORKLOAD_NS:-default}" -f 06-sample-model/llmisvc-smoke.yaml
 ```
 
 The shipped sample uses `model.uri: hf://kserve-tiny-test/placeholder` — a deliberately fake reference. The controller still reconciles the CR and creates resources; only the Pod's model-fetch init-container will fail (expected).
@@ -31,17 +33,17 @@ The shipped sample uses `model.uri: hf://kserve-tiny-test/placeholder` — a del
 
 ```bash
 # 1. The CR status reflects Progressing (expected — predictor not Ready)
-kubectl get llminferenceservice llmisvc-smoke
+kubectl get llminferenceservice llmisvc-smoke -n "${KSERVE_WORKLOAD_NS:-default}"
 # NAME           URL   READY   REASON
 # llmisvc-smoke        False   Progressing
 
 # 2. Deployment exists (0/1 — the Pod will Init-fail because of the placeholder URI)
-kubectl get deploy llmisvc-smoke-kserve
+kubectl get deploy llmisvc-smoke-kserve -n "${KSERVE_WORKLOAD_NS:-default}"
 # READY  UP-TO-DATE  AVAILABLE
 # 0/1    1           0
 
 # 3. Service exists on port 8000
-kubectl get svc llmisvc-smoke-kserve-workload-svc
+kubectl get svc llmisvc-smoke-kserve-workload-svc -n "${KSERVE_WORKLOAD_NS:-default}"
 # TYPE       CLUSTER-IP    PORT(S)
 # ClusterIP  10.96.x.y     8000/TCP
 
@@ -121,8 +123,8 @@ spec:
 Apply and wait for the Pod to reach `Ready` (model download via the storage-initializer may take several minutes on first run).
 
 ```bash
-kubectl apply -f llmisvc-tinyllama.yaml
-kubectl wait --for=condition=Ready llminferenceservice/llmisvc-tinyllama --timeout=600s
+kubectl apply -n "${KSERVE_WORKLOAD_NS:-default}" -f llmisvc-tinyllama.yaml
+kubectl wait --for=condition=Ready llminferenceservice/llmisvc-tinyllama -n "${KSERVE_WORKLOAD_NS:-default}" --timeout=600s
 ```
 
 Once Ready, the Service exposes vLLM's OpenAI-compatible API on port 8000.

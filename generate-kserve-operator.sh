@@ -29,11 +29,17 @@ INSTALL_MODE="SingleNamespace"
 CUSTOMER_REGISTRY=""
 # Operator's home namespace is hardcoded to 'kserve-operator-system' in all
 # generated artifacts. Customers customize at DEPLOY TIME via env vars:
-#   - OPERATOR_NAMESPACE on install-operator-deployment.sh (Option B wrapper)
-#   - OPERATOR_NS on deploy-bundle.sh (Option A / OLM)
-#   - SYSTEM_NS on setup-credentials.sh
-#   - KSERVE_NS on install-operator-deployment.sh (rewrites WATCH_NAMESPACE)
-# See extra-docs/architecture-namespaces.md § 9 for the full Design C model.
+#   Operator-home (Design D ns #1):
+#     - OPERATOR_NAMESPACE on install-operator-deployment.sh (Option B wrapper)
+#     - OPERATOR_NS on deploy-bundle.sh (Option A / OLM)
+#     - SYSTEM_NS on setup-credentials.sh
+#   Runtime-control (Design D ns #2):
+#     - KSERVE_NS on install-operator-deployment.sh (rewrites WATCH_NAMESPACE)
+#   Workload (Design D ns #3):
+#     - KSERVE_WORKLOAD_NS on setup-credentials.sh (comma-separated; pull-secret
+#       placement, only relevant when --customer-registry was used at build time
+#       or --also-workload-ns is passed at deploy time)
+# See extra-docs/design-d-three-namespace-model.md for the canonical model.
 
 # 1. Parse CLI Arguments
 while [[ "$#" -gt 0 ]]; do
@@ -185,8 +191,10 @@ ${OPERATOR_SDK} create api --group="operator" --version="v1alpha1" --kind="KServ
 # bearing manifest in operator-deployment.yaml (Namespace + SA + RBAC +
 # Service + Deployment). Customers customize at DEPLOY TIME via env vars on
 # the helper scripts — see the OPERATOR_NAMESPACE / OPERATOR_NS / SYSTEM_NS /
-# KSERVE_NS env vars in install-operator-deployment.sh / deploy-bundle.sh /
-# setup-credentials.sh.
+# KSERVE_NS / KSERVE_WORKLOAD_NS env vars in install-operator-deployment.sh /
+# deploy-bundle.sh / setup-credentials.sh. Design D three-namespace model
+# (operator-home + runtime-control + workload): see
+# extra-docs/design-d-three-namespace-model.md.
 KUSTOMIZATION_FILE="config/default/kustomization.yaml"
 if [ -f "${KUSTOMIZATION_FILE}" ]; then
     if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -823,17 +831,24 @@ cat > "${PACKAGE_DIR}/setup-credentials.sh" <<'CREDS_EOF'
 # USAGE:
 #   With CLI args:
 #     bash setup-credentials.sh --user <registry-user> --pass <token> \
-#                               [--server docker.io]
+#                               [--server docker.io] [--also-workload-ns]
 #
 #   Interactive (prompted if args not provided):
 #     bash setup-credentials.sh
 #
+# Design D — three-namespace model (see extra-docs/design-d-three-namespace-model.md):
+#   1. Operator-home          ($SYSTEM_NS)            — operator pod + RBAC + pull secret
+#   2. Runtime-control        (KServe controllers)    — controllers + webhooks + CR
+#   3. Workload ns(es)        ($KSERVE_WORKLOAD_NS)   — InferenceServices, predictor pods
+#
+# This script only manages secret placement; the operator-install step creates ns #2.
+#
 # Namespace lifecycle:
-#   default                   — always exists
-#   kserve-operator-system    — created by: kubectl apply -f operator-deployment.yaml (direct deploy) or operator-sdk run bundle (OLM)
-#   olm, operators            — created by: operator-sdk olm install
-#   cert-manager              — created by the user when installing cert-manager (cluster prerequisite, NOT installed by the operator)
-#   <KServe target namespace> — created by the user before deploying (default name: 'kserve', overridable by setting OperatorGroup.targetNamespaces)
+#   default                       — always exists (the default workload ns)
+#   $SYSTEM_NS                    — created by user before running this script
+#   $KSERVE_WORKLOAD_NS (each)    — created by user before running this script
+#   olm, operators                — created by: operator-sdk olm install
+#   cert-manager                  — created by the user when installing cert-manager
 # =============================================================================
 set -e
 
@@ -841,10 +856,27 @@ SECRET_NAME="__SECRET_NAME__"
 DOCKER_SERVER="docker.io"
 DOCKER_USERNAME=""
 DOCKER_PASSWORD=""
-# Operator's home namespace. Default 'kserve-operator-system'; customer
-# can override at runtime via SYSTEM_NS env var
+
+# Generator-time switch: did this package get built with --customer-registry?
+# If true, the package's image refs point to a private registry; workload-ns
+# pull secrets are needed so predictor pods can pull predictor-runtime images.
+# If false, the package uses public Docker Hub images; workload-ns pull secrets
+# are NOT created (over-provisioning to public-image-only namespaces).
+# Customer can force-enable with --also-workload-ns regardless of this flag.
+CUSTOMER_REGISTRY_ENABLED="__CUSTOMER_REGISTRY_ENABLED__"
+ALSO_WORKLOAD_NS=false
+
+# Operator's home namespace (Design D ns #1). Default 'kserve-operator-system';
+# customer overrides at runtime via SYSTEM_NS env var
 # (e.g. SYSTEM_NS=my-ops bash setup-credentials.sh ...).
 SYSTEM_NS="${SYSTEM_NS:-kserve-operator-system}"
+
+# Workload namespace(s) (Design D ns #3). Comma-separated; default 'default'.
+# Override via KSERVE_WORKLOAD_NS env var:
+#   KSERVE_WORKLOAD_NS=team-fraud bash setup-credentials.sh ...                # single team
+#   KSERVE_WORKLOAD_NS=team-a,team-b,team-c bash setup-credentials.sh ...      # multi-team
+KSERVE_WORKLOAD_NS="${KSERVE_WORKLOAD_NS:-default}"
+IFS=',' read -ra WORKLOAD_NSES <<<"$KSERVE_WORKLOAD_NS"
 
 # Parse CLI args
 while [[ $# -gt 0 ]]; do
@@ -852,43 +884,62 @@ while [[ $# -gt 0 ]]; do
         --user)    DOCKER_USERNAME="$2"; shift 2 ;;
         --pass)    DOCKER_PASSWORD="$2"; shift 2 ;;
         --server)  DOCKER_SERVER="$2"; shift 2 ;;
+        --also-workload-ns)
+            # Force pull-secret creation in every workload ns even when the
+            # package was built without --customer-registry. Use this if your
+            # predictor images come from a private registry but you didn't
+            # build with --customer-registry rewriting.
+            ALSO_WORKLOAD_NS=true; shift ;;
         --non-olm)
             # DEPRECATED: kept as a silent no-op for backwards compatibility.
-            # The script's behavior is now identical for both OLM and direct-manifest
-            # deploys: creates pull secrets only in 'default' + the operator's system
-            # namespace. The olm/operators namespaces are OLM infrastructure (not
-            # ours) and never needed pull secrets — that was a defensive overshoot
-            # in earlier versions. Safe to drop --non-olm from invocations.
+            # The script's namespace footprint is governed by Design D + the
+            # --customer-registry build-time flag, NOT by deploy mode (OLM vs
+            # direct). Safe to drop --non-olm from invocations.
             shift ;;
         -h|--help)
             cat <<'USAGE'
 Usage: bash setup-credentials.sh [OPTIONS]
 
 OPTIONS:
-  --user <username>      Registry username (prompts if not given)
-  --pass <password>      Registry password/token (prompts if not given)
-  --server <registry>    Registry host (default: docker.io)
-  -h, --help             Show this help and exit
+  --user <username>          Registry username (prompts if not given)
+  --pass <password>          Registry password/token (prompts if not given)
+  --server <registry>        Registry host (default: docker.io)
+  --also-workload-ns         Force pull-secret in workload ns(es) even when
+                             package was built without --customer-registry
+                             (use if predictor images are private)
+  -h, --help                 Show this help and exit
 
-DEPRECATED FLAGS (silently ignored, kept for backwards compatibility):
-  --non-olm              No longer needed. The script now always creates
-                         pull secrets in just two namespaces:
-                         'default' + the operator's system namespace.
-                         OLM's own namespaces ('olm', 'operators') are
-                         infrastructure that never needed our pull secrets.
+ENV VARS:
+  SYSTEM_NS                  Operator's home ns (Design D #1).
+                             Default: kserve-operator-system.
+  KSERVE_WORKLOAD_NS         Workload ns(es) (Design D #3). Comma-separated.
+                             Default: default.
+                             Examples:
+                               KSERVE_WORKLOAD_NS=team-fraud
+                               KSERVE_WORKLOAD_NS=team-a,team-b,team-c
 
-NAMESPACES WHERE SECRETS GET CREATED:
-  default                — sample workloads (iris ISVC) live here
-  <system-ns>            — operator pod + OLM CatalogSource pod for the bundle
+DESIGN D — pull-secret placement:
+  Always:   $SYSTEM_NS (operator + bundle pods pull from here)
+  If built with --customer-registry  OR  --also-workload-ns is passed:
+            also created in each $KSERVE_WORKLOAD_NS ns.
+  Otherwise: workload ns gets no pull secret (public images don't need one).
 
-If you use a private KServe-image registry (rare), also create the secret
-in your KServe target namespace yourself:
-  kubectl create secret docker-registry <name> --namespace <kserve-ns> ...
+See extra-docs/design-d-three-namespace-model.md for the architecture rationale.
+
+DEPRECATED FLAGS (silently ignored):
+  --non-olm                  No-op. Footprint is governed by Design D,
+                             not deploy mode.
 USAGE
             exit 0 ;;
         *) echo "Unknown arg: $1"; echo "Try: bash setup-credentials.sh --help"; exit 1 ;;
     esac
 done
+
+# Decide whether workload ns(es) need the pull secret.
+NEED_WORKLOAD_SECRET=false
+if [[ "${CUSTOMER_REGISTRY_ENABLED}" == "true" || "${ALSO_WORKLOAD_NS}" == "true" ]]; then
+    NEED_WORKLOAD_SECRET=true
+fi
 
 # Prompt interactively if not provided
 if [[ -z "${DOCKER_USERNAME}" ]]; then
@@ -901,10 +952,11 @@ fi
 # Pre-flight: validate required cluster prerequisites BEFORE creating any secrets.
 # Fails fast with a clear list of what's missing so the user can fix and re-run.
 #
-# Design C (per architecture-namespaces.md): our footprint is 2 namespaces
-# regardless of deploy path. 'olm' and 'operators' are OLM infrastructure created
-# by `operator-sdk olm install` — we don't touch them.
-echo "Pre-flight checks..."
+# Design D (per extra-docs/design-d-three-namespace-model.md): pull secret lands
+# in SYSTEM_NS always; in each KSERVE_WORKLOAD_NS when needed. Fail-fast on each
+# missing ns — auto-create is intentionally avoided (catches typos; lets OPA /
+# Kyverno admission policies enforce per-ns labels the user wants).
+echo "Pre-flight checks..." >&2
 MISSING=()
 
 # 1. cert-manager is a hard prerequisite for the operator (validated at reconcile
@@ -914,42 +966,63 @@ if ! kubectl get crd certificates.cert-manager.io >/dev/null 2>&1; then
 fi
 
 # 2. The operator's system namespace must already exist so kubectl create secret
-#    has a target. ('default' is always present.)
+#    has a target.
 if ! kubectl get ns "${SYSTEM_NS}" >/dev/null 2>&1; then
-    MISSING+=("namespace '${SYSTEM_NS}' — required to create the pull secret in")
+    MISSING+=("namespace '${SYSTEM_NS}' — required for the operator pull secret")
+fi
+
+# 3. Each workload namespace must exist when we're going to land a secret there.
+if [[ "${NEED_WORKLOAD_SECRET}" == "true" ]]; then
+    for ns in "${WORKLOAD_NSES[@]}"; do
+        if ! kubectl get ns "${ns}" >/dev/null 2>&1; then
+            MISSING+=("namespace '${ns}' — workload ns required when --customer-registry was used (or --also-workload-ns is set)")
+        fi
+    done
 fi
 
 if [ "${#MISSING[@]}" -gt 0 ]; then
-    echo ""
-    echo "❌ Prerequisites not met:"
+    echo "" >&2
+    echo "❌ Prerequisites not met:" >&2
     for item in "${MISSING[@]}"; do
-        echo "   - ${item}"
+        echo "   - ${item}" >&2
     done
-    echo ""
-    echo "Fix the missing items below, then re-run this script."
-    echo ""
-    echo "   # cert-manager (cluster prerequisite — pinned stable release):"
-    echo "   kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.17.2/cert-manager.yaml"
-    echo "   kubectl wait --for=condition=Ready pods --all -n cert-manager --timeout=180s"
-    echo ""
-    echo "   # Operator pod's home namespace (always required):"
-    echo "   kubectl create namespace ${SYSTEM_NS}"
-    echo ""
-    echo "   # KServe target namespace (where the CR + KServe runtime will live):"
-    echo "   kubectl create namespace kserve   # or your custom name (e.g. my-kserve)"
-    echo ""
-    echo "   # If using OLM (Option A in QUICK_START.md Step 4):"
-    echo "   operator-sdk olm install   # creates 'olm' + 'operators' ns automatically"
+    echo "" >&2
+    echo "Fix the missing items below, then re-run this script." >&2
+    echo "" >&2
+    echo "   # cert-manager (cluster prerequisite — pinned stable release):" >&2
+    echo "   kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.17.2/cert-manager.yaml" >&2
+    echo "   kubectl wait --for=condition=Ready pods --all -n cert-manager --timeout=180s" >&2
+    echo "" >&2
+    echo "   # Operator pod's home namespace (Design D #1, always required):" >&2
+    echo "   kubectl create namespace ${SYSTEM_NS}" >&2
+    echo "" >&2
+    echo "   # KServe runtime-control namespace (Design D #2, created at operator-install time):" >&2
+    echo "   kubectl create namespace kserve   # or your custom name (KSERVE_NS at install-operator-deployment.sh time)" >&2
+    echo "" >&2
+    if [[ "${NEED_WORKLOAD_SECRET}" == "true" ]]; then
+        echo "   # Workload namespace(s) (Design D #3, where your InferenceServices live):" >&2
+        for ns in "${WORKLOAD_NSES[@]}"; do
+            echo "   kubectl create namespace ${ns}" >&2
+        done
+        echo "" >&2
+    fi
+    echo "   # If using OLM (Option A in QUICK_START.md Step 4):" >&2
+    echo "   operator-sdk olm install   # creates 'olm' + 'operators' ns automatically" >&2
     exit 1
 fi
 
-echo "   ✅ cert-manager CRD registered"
-echo "   ✅ namespace '${SYSTEM_NS}' exists"
-echo ""
+echo "   ✅ cert-manager CRD registered" >&2
+echo "   ✅ namespace '${SYSTEM_NS}' exists" >&2
+if [[ "${NEED_WORKLOAD_SECRET}" == "true" ]]; then
+    for ns in "${WORKLOAD_NSES[@]}"; do
+        echo "   ✅ workload namespace '${ns}' exists" >&2
+    done
+fi
+echo "" >&2
 
 create_secret() {
     local ns=$1
-    echo "Creating pull secret '${SECRET_NAME}' in namespace '${ns}'..."
+    echo "Creating pull secret '${SECRET_NAME}' in namespace '${ns}'..." >&2
     kubectl create secret docker-registry "${SECRET_NAME}" \
         --docker-server="${DOCKER_SERVER}" \
         --docker-username="${DOCKER_USERNAME}" \
@@ -958,34 +1031,61 @@ create_secret() {
         --dry-run=client -o yaml | kubectl apply -f -
 }
 
-# Design C: exactly 2 namespaces — default (sample workloads) + system ns
-# (operator pod + bundle CatalogSource pod, both pull from here).
-create_secret default
-create_secret "${SYSTEM_NS}"
+# Design D pull-secret placement (see ADR for rationale):
+#   SYSTEM_NS         — always (operator + bundle CatalogSource pods)
+#   WORKLOAD_NS(ES)   — only when CUSTOMER_REGISTRY_ENABLED=true OR --also-workload-ns
+#                       (predictor pods only need pull secrets for private images)
+SECRET_NSES=("${SYSTEM_NS}")
+if [[ "${NEED_WORKLOAD_SECRET}" == "true" ]]; then
+    SECRET_NSES+=("${WORKLOAD_NSES[@]}")
+fi
 
-echo ""
-echo "✅ Pull secret '${SECRET_NAME}' created in: default, ${SYSTEM_NS}."
-echo "   (OLM's 'olm' + 'operators' namespaces are infrastructure; not our concern.)"
-echo ""
-echo "Next: deploy the operator (Step 4 in QUICK_START.md):"
-echo "   # Option A — OLM bundle (recommended):"
-echo "   bash deploy-bundle.sh ${SECRET_NAME}      # interactive helper (only if --customer-registry was used)"
-echo "   # ─ or ─"
-echo "   operator-sdk run bundle <bundle-image> \\"
-echo "       --namespace ${SYSTEM_NS} \\"
-echo "       --install-mode SingleNamespace=<your-kserve-ns> \\"
-echo "       --pull-secret-name ${SECRET_NAME}"
-echo ""
-echo "   # Option B — direct manifest (no OLM):"
-echo "   kubectl apply -f operator-deployment.yaml"
+# Dedup (e.g. KSERVE_WORKLOAD_NS=default + SYSTEM_NS=default would collide).
+UNIQUE_NSES=()
+declare -A SEEN
+for ns in "${SECRET_NSES[@]}"; do
+    if [[ -z "${SEEN[$ns]:-}" ]]; then
+        SEEN[$ns]=1
+        UNIQUE_NSES+=("$ns")
+    fi
+done
+
+for ns in "${UNIQUE_NSES[@]}"; do
+    create_secret "${ns}"
+done
+
+echo "" >&2
+echo "✅ Pull secret '${SECRET_NAME}' created in: ${UNIQUE_NSES[*]}." >&2
+if [[ "${NEED_WORKLOAD_SECRET}" != "true" ]]; then
+    echo "   (Workload ns skipped — package uses public images. Pass --also-workload-ns or rebuild with --customer-registry if predictors need pull access.)" >&2
+fi
+echo "" >&2
+echo "Next: deploy the operator (Step 4 in QUICK_START.md):" >&2
+echo "   # Option A — OLM bundle (recommended):" >&2
+echo "   bash deploy-bundle.sh ${SECRET_NAME}      # interactive helper (only if --customer-registry was used)" >&2
+echo "   # ─ or ─" >&2
+echo "   operator-sdk run bundle <bundle-image> \\" >&2
+echo "       --namespace ${SYSTEM_NS} \\" >&2
+echo "       --install-mode SingleNamespace=<your-kserve-ns> \\" >&2
+echo "       --pull-secret-name ${SECRET_NAME}" >&2
+echo "" >&2
+echo "   # Option B — direct manifest (no OLM):" >&2
+echo "   bash install-operator-deployment.sh   # wrapper rewrites namespaces from env vars" >&2
 CREDS_EOF
-# Inject generator-time secret name. (SYSTEM_NS is now inlined as
-# 'kserve-operator-system' directly in the heredoc; customers override at
-# runtime via the SYSTEM_NS env var.)
+# Inject generator-time secret name and customer-registry flag.
+# (SYSTEM_NS is inlined as 'kserve-operator-system' directly in the heredoc;
+# KSERVE_WORKLOAD_NS defaults to 'default' inline; both customer-overridable
+# at runtime via env vars.)
+CUSTOMER_REGISTRY_FLAG="false"
+if [ -n "${CUSTOMER_REGISTRY}" ]; then
+    CUSTOMER_REGISTRY_FLAG="true"
+fi
 if [[ "$OSTYPE" == "darwin"* ]]; then
     sed -i '' "s|__SECRET_NAME__|${SECRET_NAME}|g" "${PACKAGE_DIR}/setup-credentials.sh"
+    sed -i '' "s|__CUSTOMER_REGISTRY_ENABLED__|${CUSTOMER_REGISTRY_FLAG}|g" "${PACKAGE_DIR}/setup-credentials.sh"
 else
     sed -i "s|__SECRET_NAME__|${SECRET_NAME}|g" "${PACKAGE_DIR}/setup-credentials.sh"
+    sed -i "s|__CUSTOMER_REGISTRY_ENABLED__|${CUSTOMER_REGISTRY_FLAG}|g" "${PACKAGE_DIR}/setup-credentials.sh"
 fi
 chmod +x "${PACKAGE_DIR}/setup-credentials.sh"
 echo "Generated setup-credentials.sh in the customer package (credentials provided at runtime — not embedded)."

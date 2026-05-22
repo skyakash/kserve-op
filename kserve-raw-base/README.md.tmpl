@@ -84,12 +84,12 @@ kubectl apply --server-side -f 05-kserve-runtimes/kserve-cluster-resources.yaml
 ```
 
 ## Validation
-To prove the cluster is working, deploy the sample model:
+To prove the cluster is working, deploy the sample model in your workload namespace (default `default`):
 ```bash
-kubectl apply -f 06-sample-model/sklearn-iris.yaml
+kubectl apply -n "${KSERVE_WORKLOAD_NS:-default}" -f 06-sample-model/sklearn-iris.yaml
 ```
 Once `Ready`, test it directly without ingress routing:
 ```bash
-kubectl port-forward svc/sklearn-iris-predictor 8080:80 &
+kubectl port-forward -n "${KSERVE_WORKLOAD_NS:-default}" svc/sklearn-iris-predictor 8080:80 &
 curl -s -X POST -H 'Content-Type: application/json' -d @06-sample-model/iris-input.json http://localhost:8080/v1/models/sklearn-iris:predict
 ```

@@ -73,6 +73,15 @@ Items #4 and #5 are stretch goals — wait until you've shipped the first three.
 
 ## Recently fixed (post-0.16 validation)
 
+### Design C → Design D pivot: workload namespace separated from runtime-control — FIXED
+**Symptom (T19 attempt, 2026-05-22):** After cluster reset and a fresh build, iris ISVC deployed via `kubectl -n kserve apply -f sklearn-iris.yaml` crashed with `FileNotFoundError: /mnt/models`. The predictor pod had no `storage-initializer` init container.
+
+**Root cause:** Upstream KServe ships a `Namespace` manifest with label `control-plane: kserve-controller-manager` (`p-kserve-raw/04-kserve-core/kserve-core.yaml:1-8`, byte-for-byte pass-through from `kserve-source/install/v0.16.0/kserve.yaml`). The pod-mutator webhook `inferenceservice.kserve-webhook-server.pod-mutator` has `namespaceSelector: control-plane DoesNotExist` (upstream's anti-self-injection guard). When ISVCs land in the same namespace as the KServe controller (Design C's stated invariant), the webhook is filtered → storage-initializer never injected.
+
+T01–T16 passed historically because every `kubectl apply -f sklearn-iris.yaml` was unqualified (no `-n`) and landed in `default`, which has no `control-plane` label. T19 was the first test that intentionally put an ISVC in `kserve` ns per Design C's invariant.
+
+**Fix:** Adopted Design D — three-namespace model (operator-home + runtime-control + workload). New env var `KSERVE_WORKLOAD_NS` (comma-separated, default `default`) on `setup-credentials.sh`. ISVCs explicitly deployed in `-n "${KSERVE_WORKLOAD_NS:-default}"`. Zero `apply.go.tmpl` / `kserve-source/` changes — we stop violating upstream's assumption instead of patching around it. Pull-secret placement gated on `--customer-registry` (or `--also-workload-ns` opt-in) so public images don't get over-provisioned secrets in workload ns. Multi-tenant workload onboarding via `KSERVE_WORKLOAD_NS=team-a,team-b` unblocked. Full ADR: [`design-d-three-namespace-model.md`](design-d-three-namespace-model.md).
+
 ### `install.sh` sed-based namespace rewrite broken for custom `KSERVE_NAMESPACE` — FIXED
 **Symptom (T03 in `0.16-test-report.md`):** `KSERVE_NAMESPACE=servewell ./install.sh` failed at stage 4 with an x509 SAN mismatch — webhook config got rewritten but cert-manager Certificate `dnsNames`/`commonName` did not, so the cert's SAN didn't match the new webhook DNS.
 
