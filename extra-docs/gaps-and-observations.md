@@ -37,6 +37,27 @@ None of the bash scripts (`generate-kserve-raw.sh`, `generate-kserve-operator.sh
 
 ---
 
+## Good first issues — priority for contributors
+
+The 5 "Real gaps" above are all open. Ranked by **return-on-investment** (impact / effort) for someone picking up the codebase:
+
+| Rank | Gap | Why this ROI | Effort | Independent of other work? |
+|---|---|---|---|---|
+| 🥇 #1 | **No shellcheck on bash scripts** (Real-gap #5) | A single GitHub Actions workflow file gets static analysis on every PR; catches the kind of bugs we hand-fixed during the 0.16 cycle (e.g. Issue #8's `read` on closed stdin, mode-flag arg parsing). Low-risk, high-leverage, no domain knowledge required. | ~1 hour | ✅ Yes — pure CI hardening |
+| 🥈 #2 | **Controller unit tests are stubs** (Real-gap #3) | Operator-sdk scaffold stubs need real assertions for the 5-phase reconcile pipeline + `ensureDefaultCR` + cert-manager pre-flight. High coverage gain; protects against regression in the most complex code we own. Requires Go + envtest familiarity. | ~1 day | ✅ Yes — purely additive to `kserve-operator-base/` |
+| 🥉 #3 | **No golden-file tests on stage-1 generator output** (Real-gap #4) | The inline Python YAML walks in `generate-kserve-raw.sh` produce ~3 MB of patched manifests. A `diff -r` against a checked-in `testdata/golden/` directory would catch any unintended template-output drift. Bash + Python knowledge; no Go required. | ~3 hours | ✅ Yes — checked-in fixture + a CI step |
+| #4 | **Deleted CR is not auto-recreated** (Real-gap #2 / Issue #9) | Could add a watch on `KServeRawMode` deletion events that re-fires `ensureDefaultCR()`. Currently a documented design choice; depends on whether the maintainer wants "delete CR = self-heal" semantics (some prefer "delete = intentional teardown"). UX improvement, requires design call first. | ~half a day | ⚠️ Requires design decision before code |
+| #5 | **NetworkPolicy ns-rewriting (latent)** (Real-gap #1) | Latent until KServe upstream starts shipping NetworkPolicies. Adding a 6th category to `rewriteEmbeddedNamespaceRefs()` is mechanical (mirror an existing category). Low impact today; future-proofing. | ~1 hour | ✅ Yes — small targeted edit |
+
+**Recommended starter path for a new contributor:**
+1. **Pick #1 (shellcheck CI)** — gets you familiar with the bash scripts, the priority list, and the CI surface in one shot. Low risk of breaking anything.
+2. **Then #3 (golden-file tests)** — natural follow-up; you'll have already learned the script outputs.
+3. **Then #2 (controller unit tests)** — most impactful but requires more onboarding to Go + envtest + the reconcile semantics. Best after you've absorbed the codebase via #1 and #3.
+
+Items #4 and #5 are stretch goals — wait until you've shipped the first three.
+
+---
+
 ## Confirmed non-gaps (closed after E2E validation)
 
 | Item | Outcome |

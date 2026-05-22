@@ -61,7 +61,7 @@ while [[ "$#" -gt 0 ]]; do
             echo "  -p, --push           Automatically push the Docker image without prompting"
             echo "  -x, --multi-platform Build and push for multiple architectures (linux/amd64, arm64, etc.)"
             echo "  -o, --olm            Generate and build an OLM bundle for the operator (implies -b)"
-            echo "  --install-mode <mode> OLM install mode: OwnNamespace (default), AllNamespaces, SingleNamespace, MultiNamespace"
+            echo "  --install-mode <mode> OLM install mode: SingleNamespace (default), OwnNamespace, AllNamespaces, MultiNamespace"
             echo "  --customer-registry <prefix>  Customer private registry prefix (e.g., artifactory.example.com/myrepo)"
             echo "  --pull-secret <name> Name of an existing imagePullSecret on the cluster (injected into manager spec)"
             echo "  --docker-server <url>  Registry URL for pull secret creation (default: docker.io)"

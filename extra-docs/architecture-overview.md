@@ -4,6 +4,92 @@ This document provides a high-level, conceptual look at the KServe Operator gene
 
 ---
 
+## The whole pipeline on one page
+
+Before drilling into per-phase detail below, this single diagram shows every moving piece end-to-end — upstream KServe → build factory → distributable artifacts → cluster deployment → reconciliation → running workloads. Each colored swimlane corresponds to a section below.
+
+```mermaid
+graph TB
+    classDef source fill:#f9d0c4,stroke:#e92758,stroke-width:2px,color:#000
+    classDef gen fill:#ffe6a7,stroke:#ff9f1c,stroke-width:2px,color:#000
+    classDef artifact fill:#d4e157,stroke:#689f38,stroke-width:2px,color:#000
+    classDef cluster fill:#b3e5fc,stroke:#0288d1,stroke-width:2px,color:#000
+    classDef ops fill:#e1bee7,stroke:#8e24aa,stroke-width:2px,color:#000
+    classDef runtime fill:#c8e6c9,stroke:#388e3c,stroke-width:2px,color:#000
+
+    subgraph PHASE1[Phase 1 — Build Factory]
+        direction LR
+        ZIP[kserve-release-0.16.zip]:::source
+        GEN1[generate-kserve-raw.sh]:::gen
+        GEN2[generate-kserve-operator.sh]:::gen
+        ZIP --> GEN1
+        GEN1 --> RAW[p-kserve-raw/<br/>embedded KServe manifests<br/>+ install.sh + samples]:::artifact
+        RAW --> GEN2
+        GEN2 --> OP[p-kserve-operator/<br/>Go operator + Dockerfile]:::artifact
+        GEN2 --> PKG[p-kserve-operator-package/<br/>OLM bundle + helper scripts]:::artifact
+    end
+
+    subgraph PHASE2[Phase 2 — Deployer Journey]
+        direction LR
+        CHOICE{Deploy path?}:::ops
+        OPTA[Option A — OLM<br/>operator-sdk run bundle]:::ops
+        OPTB[Option B — Direct manifest<br/>kubectl apply -f operator-deployment.yaml]:::ops
+        OPTC[Option C — install.sh<br/>pure kubectl apply, no operator]:::ops
+        CHOICE --> OPTA
+        CHOICE --> OPTB
+        CHOICE --> OPTC
+    end
+
+    subgraph PHASE3[Phase 3 — Cluster]
+        direction TB
+        OPPOD[Operator Pod<br/>kserve-operator-system]:::cluster
+        CR[KServeRawMode CR<br/>in user-chosen ns]:::cluster
+        OPPOD -- ensureDefaultCR --> CR
+        CR -. WATCH_NAMESPACE .-> OPPOD
+    end
+
+    subgraph PHASE4[Phase 4 — Reconciliation]
+        direction LR
+        R1[1 ValidatingCertManager]:::runtime
+        R2[2 InstallingCRDs]:::runtime
+        R3[3 InstallingRBAC]:::runtime
+        R4[4 InstallingCore<br/>+ apply.go rewrites ns refs]:::runtime
+        R5[5 InstallingRuntimes]:::runtime
+        R6[Ready]:::runtime
+        R1 --> R2 --> R3 --> R4 --> R5 --> R6
+    end
+
+    subgraph PHASE5[Phase 5 — Running KServe]
+        direction LR
+        KCM[kserve-controller-manager]:::runtime
+        WEBHOOK[Webhook 9443/TLS]:::runtime
+        ISVC[InferenceService<br/>predictor pod]:::runtime
+        USER[User: kubectl apply isvc]:::ops
+        USER --> WEBHOOK
+        WEBHOOK -- admit --> ISVC
+        KCM -. reconciles .-> ISVC
+    end
+
+    PKG --> CHOICE
+    OP --> CHOICE
+    RAW --> OPTC
+    OPTA --> OPPOD
+    OPTB --> OPPOD
+    OPTC -- skips operator, installs KServe directly --> KCM
+    CR --> R1
+    R6 --> KCM
+```
+
+**Reading the diagram top-to-bottom:** Phase 1 is your laptop (build factory output: 3 directories of artifacts). Phase 2 is the customer picking one of three deploy paths. Phases 3–4 happen inside the cluster (operator-managed paths only — Option C skips them and goes straight to Phase 5). Phase 5 is the end state where InferenceServices serve traffic.
+
+**Key invariants visible in the diagram:**
+- The 3 build artifacts (`p-kserve-raw/`, `p-kserve-operator/`, `p-kserve-operator-package/`) all flow from the same upstream zip — one source of truth.
+- Option C bypasses the operator entirely, hence its arrow goes directly to the KServe runtime layer.
+- The 5 reconcile phases all happen INSIDE one CR's reconcile loop; they're sequential, not parallel.
+- The webhook is the single admission gate for every ISVC the user creates (visible in Phase 5).
+
+---
+
 ## Phase 1: The Build Factory (Generation)
 
 This diagram illustrates how the shell scripts ingest upstream KServe manifests and transform them into distributable artifacts.

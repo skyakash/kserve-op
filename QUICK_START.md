@@ -229,6 +229,36 @@ KServe Raw Mode supports **three deploy paths**, in increasing order of simplici
 
 If you don't have a strong preference, **start with Option C** — it's the fewest moving parts and works on any cluster.
 
+### Decision flowchart — which path do you want?
+
+```mermaid
+flowchart TD
+    Q1{Are you on a<br/>production cluster<br/>that already uses OLM?}
+    Q2{Do you need the<br/>operator's lifecycle<br/>management — auto-init,<br/>5-phase reconcile,<br/>CR-driven config?}
+    Q3{Is your KServe image<br/>on a private registry?}
+
+    A[Option A — OLM Bundle<br/><i>operator-sdk run bundle</i>]
+    B[Option B — Direct manifest<br/><i>kubectl apply -f operator-deployment.yaml</i>]
+    C[Option C — install.sh<br/><i>no operator, no CR</i>]
+
+    Q1 -- yes --> A
+    Q1 -- no --> Q2
+    Q2 -- yes --> Q3
+    Q2 -- no --> C
+    Q3 -- yes --> B
+    Q3 -- no --> C
+
+    classDef question fill:#fff3e0,stroke:#fb8c00,stroke-width:2px,color:#000
+    classDef terminal fill:#c8e6c9,stroke:#388e3c,stroke-width:2px,color:#000
+    class Q1,Q2,Q3 question
+    class A,B,C terminal
+```
+
+**Quick rules of thumb:**
+- **OLM already in your stack?** → Option A (matches your existing operator-management story).
+- **No OLM, but you want the operator?** → Option B (private registries get full pull-secret support via `setup-credentials.sh`).
+- **Just want it running fast?** → Option C (one script, no operator overhead; perfect for dev clusters, customer demos, and short-lived environments).
+
 **Option A: OLM Bundle (recommended, `InstallMode: SingleNamespace`)**
 
 `operator-sdk run bundle` accepts an `--install-mode` flag that auto-creates the OperatorGroup with the right `targetNamespaces` — you don't define it yourself. Pass `SingleNamespace=<your-kserve-ns>` and it wires up the rest.

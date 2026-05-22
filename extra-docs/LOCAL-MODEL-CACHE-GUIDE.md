@@ -224,6 +224,43 @@ The shipped sample is **deliberately minimal** for the demo. Before adapting for
 
 ## How it works
 
+### Cache lifecycle — visual
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant K as kube-apiserver
+    participant LMC as localmodel-controller
+    participant AG as localmodel-agent<br/>(DaemonSet, per worker)
+    participant JOB as Download Job<br/>(per worker)
+    participant PV as Node-local PV
+    participant W as Defaults Webhook<br/>(KServe)
+    participant P as Predictor Pod
+
+    Note over U,P: Phase A — Cache provisioning
+    U->>K: kubectl apply LocalModelCache<br/>(sourceModelUri: gs://...)
+    K-->>LMC: watch event
+    LMC->>K: Create PVC per worker<br/>(kserve-localmodel-jobs ns)
+    LMC->>AG: AG creates models/<cache>/ subdirs on hostpath
+    LMC->>JOB: Spawn one Job per labeled worker
+    JOB->>JOB: storage-initializer pulls from gs://
+    JOB->>PV: Write model.joblib into per-node hostpath
+    JOB-->>LMC: Job Complete → mark NodeDownloaded
+    LMC-->>K: status.copies.available == N (Ready)
+
+    Note over U,P: Phase B — ISVC binds to cache
+    U->>K: kubectl apply InferenceService<br/>(storageUri: gs://... — same URI)
+    K-->>W: defaulter admission
+    W->>W: Match cache by URI<br/>(localModel.enabled=true)
+    W->>K: Mutate ISVC: inject<br/>internal.serving.kserve.io/<br/>storage-initializer-sourceuri<br/>+ pvc://<cache-pvc>/models/<cache>
+    K->>P: Create Predictor Pod<br/>(mounts cache PVC, no init container)
+    P->>PV: Read model.joblib from local PV<br/>(no internet at startup)
+    P-->>U: /v1/models/.../predict → {"predictions":[…]}
+```
+
+### Same flow, plain-text ASCII
+
 ```
               ┌─────────────────────────────┐
               │ LocalModelCache (CR)        │
