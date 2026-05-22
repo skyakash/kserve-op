@@ -16,6 +16,8 @@ KServe does not currently ship NetworkPolicies, so this is latent. If that chang
 
 **Confirmed during T17 (2026-05-20):** after `kubectl delete kserverawmode kserve-rawmode`, the CR is gone, the operator pod has unchanged uptime, KServe controllers keep Running, and operator logs show no reaction. Recovery is a manual `kubectl rollout restart deploy/<operator>-controller-manager` which re-triggers `ensureDefaultCR()`. Logged as a documented design choice; no in-branch fix planned.
 
+**Adjacent variant — FIXED in commit `95ffc69` (Follow-up B):** The same `ensureDefaultCR()` retry loop previously gave up after 5 attempts (~30 s total). If a customer started the operator pod BEFORE creating the KServe target namespace, the retry would exhaust and the same rollout-restart recovery was needed. Now the loop retries indefinitely with exponential backoff capped at 30 s — once the namespace appears (even hours later), the next retry succeeds. This fix addresses the "namespace created after operator startup" variant but **does NOT** address the "user deleted the CR after it reached Ready" variant above — that's still a documented design choice.
+
 ---
 
 ## Real gaps — testing

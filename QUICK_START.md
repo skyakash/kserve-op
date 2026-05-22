@@ -309,13 +309,18 @@ Two equivalent invocations:
 # (kserve-operator-system, or whatever you passed to --operator-namespace at build time):
 kubectl apply -f operator-deployment.yaml
 
-# OR — choose the operator namespace at deploy time (no rebuild needed):
-OPERATOR_NAMESPACE=<your-ns> bash install-operator-deployment.sh
-# Python YAML walk rewrites every namespace ref in operator-deployment.yaml
-# before applying. The script does --dry-run too if you want to preview.
+# OR — choose BOTH namespaces at deploy time (no rebuild needed):
+OPERATOR_NAMESPACE=<your-operator-ns> KSERVE_NS=<your-kserve-ns> \
+  bash install-operator-deployment.sh
+# - OPERATOR_NAMESPACE rewrites every namespace ref in operator-deployment.yaml
+#   (Namespace.metadata.name + metadata.namespace on namespaced resources + RBAC subjects).
+# - KSERVE_NS rewrites the Deployment's WATCH_NAMESPACE env var from the
+#   OLM-downward-API source to a literal value, so the operator targets your
+#   chosen KServe namespace for the auto-init CR + KServe runtime install.
+# The script supports --dry-run if you want to preview the rewritten YAML.
 ```
 
-> **Pure deploy-time architecture.** The wrapper script (`install-operator-deployment.sh`) mirrors `install.sh`'s rewrite pattern from Option C, making Option B symmetric: one generated package serves any namespace. Use `OPERATOR_NAMESPACE` consistently across `install-operator-deployment.sh` AND `SYSTEM_NS` on `setup-credentials.sh` so the operator pod's pull secret lands in the same namespace it's deployed into.
+> **Pure deploy-time architecture.** The wrapper script (`install-operator-deployment.sh`) mirrors `install.sh`'s rewrite pattern from Option C, making Option B symmetric: one generated package serves any namespace. Use `OPERATOR_NAMESPACE` consistently across `install-operator-deployment.sh` AND `SYSTEM_NS` on `setup-credentials.sh` so the operator pod's pull secret lands in the same namespace it's deployed into. `KSERVE_NS` lets you also target a custom KServe namespace without rebuilding.
 
 **Option C: `install.sh` (no operator, no OLM — pure `kubectl apply` orchestrated by a shell script)**
 
