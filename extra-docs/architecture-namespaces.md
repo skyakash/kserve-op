@@ -288,7 +288,7 @@ flowchart TB
 |---|---|---|---|---|---|
 | 1 | **Operator-home** | `kserve-operator-system` | `OPERATOR_NAMESPACE` / `OPERATOR_NS` / `SYSTEM_NS` | Platform / SRE | Operator pod + RBAC + pull secret |
 | 2 | **Runtime-control** | `kserve` | `KSERVE_NS` / `KSERVE_NAMESPACE` | Platform / SRE | KServe controllers + webhooks + `KServeRawMode` CR; cluster-scoped resources (CRDs, ClusterServingRuntimes) logically owned here |
-| 3 | **Workload** | `default` | `KSERVE_WORKLOAD_NS` (comma-separated multi-ns supported) | App team / data scientist | `InferenceService`, `LLMInferenceService`, predictor pods, model PVCs |
+| 3 | **Workload** | `default` | `KSERVE_WORKLOAD_NS` (comma-separated multi-ns supported) | App team / data scientist | `InferenceService`, predictor pods, model PVCs |
 
 **Rule:** ns #1 and #2 are singletons per cluster; ns #3 is plural (multi-tenant ready). No resource of ours (operator, controllers, webhooks, CRDs) lives in ns #3. No user workload lives in ns #1 or #2.
 
@@ -409,7 +409,7 @@ All three Design D namespaces are **user-configurable at DEPLOY TIME ONLY**. The
 |---|---|---|---|
 | **Operator-home** (Design D #1) | `kserve-operator-system` | `OPERATOR_NAMESPACE=<ns>` env var on `install-operator-deployment.sh` (Option B wrapper rewrites the YAML on-the-fly). `OPERATOR_NS=<ns>` env var on `deploy-bundle.sh` (Option A — passes through to `operator-sdk run bundle --namespace=<ns>`). `SYSTEM_NS=<ns>` env var on `setup-credentials.sh`. | Operator pod home; OLM CatalogSource pod for the bundle. |
 | **Runtime-control** (Design D #2) | `kserve` | `KSERVE_NS=<ns>` env var on `install-operator-deployment.sh` (Option B — rewrites Deployment's WATCH_NAMESPACE env). `--install-mode SingleNamespace=<ns>` on `operator-sdk run bundle` (Option A). `KSERVE_NAMESPACE=<ns>` env var on `install.sh` (Option C). | KServe controller pods; the `KServeRawMode` CR. **NOT where ISVCs live.** |
-| **Workload** (Design D #3) | `default` | `KSERVE_WORKLOAD_NS=<ns1>,<ns2>,...` env var on `setup-credentials.sh` (comma-separated; pull-secret placement). At ISVC deploy time: `kubectl -n "${KSERVE_WORKLOAD_NS:-default}" apply -f sklearn-iris.yaml`. | InferenceServices, LLMInferenceServices, predictor pods, model PVCs. |
+| **Workload** (Design D #3) | `default` | `KSERVE_WORKLOAD_NS=<ns1>,<ns2>,...` env var on `setup-credentials.sh` (comma-separated; pull-secret placement). At ISVC deploy time: `kubectl -n "${KSERVE_WORKLOAD_NS:-default}" apply -f sklearn-iris.yaml`. | InferenceServices, predictor pods, model PVCs. |
 
 **Backwards compatibility:** all existing CI scripts and customer invocations that don't set any of these env vars get byte-identical output to before — operator in `kserve-operator-system`, KServe in `kserve`, ISVCs in `default` (which was also the de facto pattern under Design C since all `kubectl apply -f sklearn-iris.yaml` calls were unqualified). Adopt the env-var overrides only if you have naming collisions or org-naming conventions to honor.
 

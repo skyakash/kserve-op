@@ -123,8 +123,33 @@ pushd "${KSERVE_SOURCE}" > /dev/null
 
 echo "[1/4] Extracting KServe CRDs..."
 mkdir -p "${OUTPUT_DIR}/02-kserve-crds"
-${KUSTOMIZE} build config/crd > "${OUTPUT_DIR}/02-kserve-crds/kserve-crds.yaml"
-${KUSTOMIZE} build config/crd/full/llmisvc >> "${OUTPUT_DIR}/02-kserve-crds/kserve-crds.yaml" 2>/dev/null || true
+${KUSTOMIZE} build config/crd > "${OUTPUT_DIR}/02-kserve-crds/kserve-crds.yaml.raw"
+# Note: previously also appended config/crd/full/llmisvc — dropped entirely
+# along with the llmisvc-controller-manager removal (project scope narrowed to
+# core InferenceService only).
+#
+# Filter llmisvc + localmodel CRDs from the kserve-source output. Keyed on
+# kind + metadata.name. Idempotent across upstream version bumps; if a future
+# release renames these CRDs, add the new names to DROP_KINDS_NAMES.
+python3 -c '
+import sys, yaml
+DROP = {
+    "CustomResourceDefinition": {
+        "llminferenceservices.serving.kserve.io",
+        "llminferenceserviceconfigs.serving.kserve.io",
+        "localmodelcaches.serving.kserve.io",
+        "localmodelnodes.serving.kserve.io",
+        "localmodelnodegroups.serving.kserve.io",
+    },
+}
+def keep(d):
+    if not isinstance(d, dict): return True
+    k = d.get("kind"); n = (d.get("metadata") or {}).get("name", "")
+    return n not in DROP.get(k, set())
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d and keep(d)]
+yaml.safe_dump_all(docs, open(sys.argv[2], "w"))
+' "${OUTPUT_DIR}/02-kserve-crds/kserve-crds.yaml.raw" "${OUTPUT_DIR}/02-kserve-crds/kserve-crds.yaml"
+rm "${OUTPUT_DIR}/02-kserve-crds/kserve-crds.yaml.raw"
 echo "      Done."
 
 echo "[2/4] Extracting KServe RBAC..."
@@ -137,51 +162,54 @@ python3 -c '
 import yaml
 import sys
 
-# Two RBAC fix-ups applied to the kustomize output:
+# Two RBAC transformations applied to the kustomize output:
 #
-# 1. ClusterRoleBindings cluster-scoped — the source files only set
+# 1. Drop llmisvc + localmodel RBAC objects entirely (the controllers
+#    themselves are dropped from the build — see core step).
+#
+# 2. ClusterRoleBindings cluster-scoped — the source files only set
 #    subjects[].namespace explicitly for some ServiceAccounts (historically
-#    kserve-controller-manager). Newer KServe versions add CRBs for
-#    localmodel/llmisvc whose subjects omit the namespace; Kubernetes
-#    rejects those at apply time. Default every missing ServiceAccount-
-#    subject namespace to "kserve" so the runtime apply.go can rewrite
-#    it to the user-chosen target namespace.
-#
-# 2. llmisvc-manager-role ClusterRole is missing CRD read permission.
-#    The kserve/llmisvc-controller binary performs a storage-version
-#    migration on startup that reads CRDs — without this permission the
-#    controller pod crashloops with "customresourcedefinitions ...
-#    is forbidden". Neither 0.16 nor master upstream grants this; we
-#    extend the role to match the binary requirement.
-CRD_PERMISSION = {
-    "apiGroups": ["apiextensions.k8s.io"],
-    "resources":  ["customresourcedefinitions"],
-    "verbs":      ["get", "list", "watch"],
+#    kserve-controller-manager). Newer KServe versions may add CRBs with
+#    subjects omitting the namespace; Kubernetes rejects those at apply
+#    time. Default every missing ServiceAccount-subject namespace to
+#    "kserve" so the runtime apply.go can rewrite it to the user-chosen
+#    target namespace.
+DROP = {
+    "ClusterRole": {
+        "llmisvc-manager-role",
+        "kserve-localmodel-manager-role",
+        "kserve-localmodelnode-agent-role",
+    },
+    "ClusterRoleBinding": {
+        "llmisvc-manager-rolebinding",
+        "kserve-localmodel-manager-rolebinding",
+        "kserve-localmodelnode-agent-rolebinding",
+    },
+    "ServiceAccount": {
+        "llmisvc-controller-manager",
+        "kserve-localmodel-controller-manager",
+        "kserve-localmodelnode-agent",
+    },
+    "Role": {"llmisvc-leader-election-role"},
+    "RoleBinding": {"llmisvc-leader-election-rolebinding"},
 }
+
+def drop(doc):
+    if not isinstance(doc, dict): return False
+    k = doc.get("kind"); n = (doc.get("metadata") or {}).get("name", "")
+    return n in DROP.get(k, set())
 
 output = []
 with open(sys.argv[1], "r") as f:
     docs = yaml.safe_load_all(f)
     for doc in docs:
-        if doc:
+        if doc and not drop(doc):
             kind = doc.get("kind")
-            name = doc.get("metadata", {}).get("name", "")
-
             if kind == "ClusterRoleBinding":
                 for subject in doc.get("subjects", []):
                     if subject.get("kind") == "ServiceAccount" and not subject.get("namespace"):
                         subject["namespace"] = "kserve"
-
-            elif kind == "ClusterRole" and name == "llmisvc-manager-role":
-                rules = doc.setdefault("rules", [])
-                already = any(
-                    "apiextensions.k8s.io" in (r.get("apiGroups") or [])
-                    and "customresourcedefinitions" in (r.get("resources") or [])
-                    for r in rules
-                )
-                if not already:
-                    rules.append(CRD_PERMISSION)
-        output.append(doc)
+            output.append(doc)
 
 with open(sys.argv[2], "w") as f:
     yaml.safe_dump_all(output, f)
@@ -211,52 +239,85 @@ if ! grep -q "^kind: Issuer$" "${CORE_TMP}"; then
 fi
 
 # Post-processing on the kustomize output:
-#   1. inferenceservice-config ConfigMap: force RawDeployment, disable Istio/Ingress.
-#   2. Pin localmodel + llmisvc controller images to v0.16.0. KServe 0.16
-#      ships these manifests with :latest, which drifts and can pull a
-#      newer binary whose RBAC needs / volume expectations exceed what
-#      the 0.16 manifests provide. Pinning gives reproducibility.
-#   3. llmisvc-manager-role ClusterRole: add CRD read permission so the
-#      llmisvc controller's startup storage-version migration succeeds.
-#      Neither 0.16 nor master upstream grants this permission, but the
-#      published binary requires it.
+#   1. Drop llmisvc + localmodel resources entirely (their controllers are
+#      removed from project scope).
+#   2. inferenceservice-config ConfigMap: force RawDeployment, disable Istio/Ingress.
+#   3. Pin the kserve-controller image to v0.16.0. KServe 0.16 ships :latest,
+#      which drifts; pinning gives reproducibility.
 python3 -c '
 import yaml
 import json
 import sys
 
-# Image-tag pinning (replace :latest with :v0.16.0). Applied to every
-# Deployment/DaemonSet container in the manifest.
-IMAGE_PIN = {
-    "kserve/kserve-controller":            "kserve/kserve-controller:v0.16.0",
-    "kserve/llmisvc-controller":           "kserve/llmisvc-controller:v0.16.0",
-    "kserve/kserve-localmodel-controller": "kserve/kserve-localmodel-controller:v0.16.0",
-    "kserve/kserve-localmodelnode-agent":  "kserve/kserve-localmodelnode-agent:v0.16.0",
+# Drop llmisvc + localmodel resources from the core manifest. Filter by
+# kind + metadata.name. If upstream renames any of these in a future
+# release, add the new names here.
+DROP = {
+    # CRDs (also emitted into 04-kserve-core/ by kustomize default).
+    "CustomResourceDefinition": {
+        "llminferenceservices.serving.kserve.io",
+        "llminferenceserviceconfigs.serving.kserve.io",
+        "localmodelcaches.serving.kserve.io",
+        "localmodelnodes.serving.kserve.io",
+        "localmodelnodegroups.serving.kserve.io",
+    },
+    "ServiceAccount": {
+        "llmisvc-controller-manager",
+        "kserve-localmodel-controller-manager",
+        "kserve-localmodelnode-agent",
+    },
+    "Deployment": {
+        "llmisvc-controller-manager",
+        "kserve-localmodel-controller-manager",
+    },
+    "DaemonSet": {"kserve-localmodelnode-agent"},
+    "Service": {
+        "llmisvc-controller-manager-service",
+        "llmisvc-webhook-server-service",
+    },
+    "Certificate": {"llmisvc-serving-cert"},
+    "ValidatingWebhookConfiguration": {
+        "llminferenceservice.serving.kserve.io",
+        "llminferenceserviceconfig.serving.kserve.io",
+        "localmodelcache.serving.kserve.io",
+    },
+    "ConfigMap": {"kserve-config-llm-decode-template"},
+    # Upstream ships bundled LLMInferenceServiceConfig CR instances as
+    # serving presets/templates. With the LLMInferenceServiceConfig CRD
+    # removed, these CR instances cannot be applied; drop ALL of them
+    # regardless of name. The "*" sentinel means "match any name".
+    "LLMInferenceServiceConfig": {"*"},
+    "Namespace": {"kserve-localmodel-jobs"},
+    "Role": {"llmisvc-leader-election-role"},
+    "RoleBinding": {"llmisvc-leader-election-rolebinding"},
+    # Upstream names ClusterRoles `*-manager-role` (not `*-controller-manager`);
+    # both naming families re-emit here from kustomize config/default.
+    "ClusterRole": {
+        "llmisvc-manager-role",
+        "kserve-localmodel-manager-role",
+        "kserve-localmodelnode-agent-role",
+    },
+    "ClusterRoleBinding": {
+        "llmisvc-manager-rolebinding",
+        "kserve-localmodel-manager-rolebinding",
+        "kserve-localmodelnode-agent-rolebinding",
+    },
 }
 
-# storage-initializer is referenced as a string inside ConfigMap JSON
-# fields (localModel.defaultJobImage and storageInitializer.image), not
-# as a container image. Substituted via JSON rewrite below.
+def drop(doc):
+    if not isinstance(doc, dict): return False
+    k = doc.get("kind"); n = (doc.get("metadata") or {}).get("name", "")
+    drop_set = DROP.get(k, set())
+    return "*" in drop_set or n in drop_set
+
+# Image-tag pinning (replace :latest with :v0.16.0). With llmisvc + localmodel
+# gone, only the core kserve-controller image needs pinning.
+IMAGE_PIN = {
+    "kserve/kserve-controller": "kserve/kserve-controller:v0.16.0",
+}
+
 STORAGE_INITIALIZER_OLD = "kserve/storage-initializer:latest"
 STORAGE_INITIALIZER_NEW = "kserve/storage-initializer:v0.16.0"
-
-# Namespace the localmodel controller hardcodes for download Jobs and
-# their bound PVCs. Upstream KServe expects the user to create this
-# namespace as part of install (see test fixtures, but no manifest
-# creates it). We bundle it so the operator creates it during
-# InstallingCore — no extra prereq step for the user.
-LOCALMODEL_JOBS_NS = {
-    "apiVersion": "v1",
-    "kind": "Namespace",
-    "metadata": {"name": "kserve-localmodel-jobs"},
-}
-
-# llmisvc CRD read permission (binary requires it at startup).
-CRD_PERMISSION = {
-    "apiGroups": ["apiextensions.k8s.io"],
-    "resources":  ["customresourcedefinitions"],
-    "verbs":      ["get", "list", "watch"],
-}
 
 def pin_image(container):
     img = container.get("image", "")
@@ -272,6 +333,8 @@ with open(sys.argv[1], "r") as f:
 for doc in docs:
     if not doc:
         output.append(doc); continue
+    if drop(doc):
+        continue
 
     kind = doc.get("kind")
     name = doc.get("metadata", {}).get("name", "")
@@ -287,48 +350,20 @@ for doc in docs:
             ingress_cfg["ingressClassName"] = ""
             ingress_cfg["disableIngressCreation"] = True
             doc["data"]["ingress"] = json.dumps(ingress_cfg, indent=4)
-        # Enable the LocalModelCache auto-injection. Upstream default is
-        # false, which silently disables the URI-match-and-rewrite that
-        # ties an InferenceService to a cached PVC. With enabled=true,
-        # ISVCs whose storageUri matches an existing LocalModelCache get
-        # the cached PVC mounted automatically.
-        if "localModel" in doc.get("data", {}):
-            lm_cfg = json.loads(doc["data"]["localModel"])
-            lm_cfg["enabled"] = True
-            doc["data"]["localModel"] = json.dumps(lm_cfg, indent=4)
-        # Pin storage-initializer:latest -> :v0.16.0 inside the JSON-blob
-        # ConfigMap fields that reference it (localModel.defaultJobImage,
-        # storageInitializer.image). String replace is safe because the
-        # source uses the exact "kserve/storage-initializer:latest" form.
+        # NOTE: localModel.enabled patch removed along with localmodel
+        # controller removal. Storage-initializer image string-replace
+        # (in storageInitializer.image / localModel.defaultJobImage JSON
+        # fields) stays because the core storage-initializer is still
+        # used by every InferenceService for model fetching.
         for k, v in doc.get("data", {}).items():
             if isinstance(v, str) and STORAGE_INITIALIZER_OLD in v:
                 doc["data"][k] = v.replace(STORAGE_INITIALIZER_OLD, STORAGE_INITIALIZER_NEW)
-
-    elif kind == "ClusterRole" and name == "llmisvc-manager-role":
-        rules = doc.setdefault("rules", [])
-        already = any(
-            "apiextensions.k8s.io" in (r.get("apiGroups") or [])
-            and "customresourcedefinitions" in (r.get("resources") or [])
-            for r in rules
-        )
-        if not already:
-            rules.append(CRD_PERMISSION)
 
     if kind in ("Deployment", "DaemonSet"):
         for c in doc.get("spec", {}).get("template", {}).get("spec", {}).get("containers", []):
             pin_image(c)
 
     output.append(doc)
-
-# Append the kserve-localmodel-jobs Namespace if not already present.
-# (Idempotent: a future upstream that ships this Namespace will skip the append.)
-has_lm_jobs_ns = any(
-    d for d in output
-    if d and d.get("kind") == "Namespace"
-    and d.get("metadata", {}).get("name") == "kserve-localmodel-jobs"
-)
-if not has_lm_jobs_ns:
-    output.append(LOCALMODEL_JOBS_NS)
 
 with open(sys.argv[2], "w") as f:
     yaml.safe_dump_all(output, f)
@@ -354,30 +389,12 @@ cp "${SCRIPT_DIR}/kserve-raw-base/sklearn-iris.yaml.tmpl" "${OUTPUT_DIR}/06-samp
 cp "${SCRIPT_DIR}/kserve-raw-base/iris-input.json.tmpl" "${OUTPUT_DIR}/06-sample-model/iris-input.json"
 echo "      Generated sklearn-iris.yaml and iris-input.json."
 
-# LocalModelCache sample — exercises the local-model caching feature
-# introduced in 0.16. Requires at least one node labeled
-# kserve/localmodel=worker so the agent DaemonSet can schedule there.
-# Two flavours generated:
-#   * Online: sourceModelUri is gs:// (needs internet egress at download
-#     time only — predictor pods read from the cache PVC afterwards).
-#   * Air-gapped (s3://): a self-contained Minio-backed recipe under the
-#     airgap-localmodelcache/ subdirectory — see its README for the full
-#     apply walkthrough. The previous pvc://-based "offline" samples were
-#     removed because KServe v0.16.0's LocalModelCache download path does
-#     NOT support pvc:// (only s3://, gs://, http(s)://, abfs://).
-cp "${SCRIPT_DIR}/kserve-raw-base/localmodelcache-nodegroup-sample.yaml.tmpl"           "${OUTPUT_DIR}/06-sample-model/localmodelcache-nodegroup.yaml"
-cp "${SCRIPT_DIR}/kserve-raw-base/localmodelcache-sample.yaml.tmpl"                     "${OUTPUT_DIR}/06-sample-model/localmodelcache.yaml"
-cp "${SCRIPT_DIR}/kserve-raw-base/localmodelcache-isvc-sample.yaml.tmpl"                "${OUTPUT_DIR}/06-sample-model/localmodelcache-isvc.yaml"
-cp "${SCRIPT_DIR}/kserve-raw-base/chown-hostpath-helper-sample.yaml.tmpl"               "${OUTPUT_DIR}/06-sample-model/chown-hostpath-helper.yaml"
-cp -R "${SCRIPT_DIR}/kserve-raw-base/airgap-localmodelcache"                            "${OUTPUT_DIR}/06-sample-model/airgap-localmodelcache"
-echo "      Generated localmodelcache (online + airgap) sample manifests."
-
-# llmisvc smoke-test sample — minimal LLMInferenceService that exercises
-# the llmisvc-controller-manager's reconcile path (Deployment + Service
-# creation) without loading a real model. See the YAML header for
-# production-mode instructions (Gateway API CRD prereq + real model URI).
-cp "${SCRIPT_DIR}/kserve-raw-base/llmisvc-sample.yaml.tmpl" "${OUTPUT_DIR}/06-sample-model/llmisvc-smoke.yaml"
-echo "      Generated llmisvc-smoke.yaml."
+# Note: LocalModelCache + LLMInferenceService sample manifests were removed
+# along with the localmodel + llmisvc controllers — project scope narrowed
+# to core InferenceService serving only. The corresponding sample templates
+# in kserve-raw-base/ have also been deleted. If a future contributor needs
+# to re-introduce these samples, they should also revert the corresponding
+# filter additions in generate-kserve-raw.sh.
 
 echo "-----------------------------------------------------------------"
 echo " Creating Installer Script (install.sh)"

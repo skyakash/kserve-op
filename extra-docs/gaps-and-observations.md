@@ -1,6 +1,8 @@
 # Gaps and Observations — kserve-op
 
-_Last updated: 2026-05-21 (after the 17-test 0.16 validation run and the 8-issue fix cycle — see `0.16-test-report.md` for per-issue traceability)._
+_Last updated: 2026-05-23 (after the controller-removal commit; see disclaimer below)._
+
+> **⚠ PROJECT-SCOPE CHANGE (2026-05-23):** Issues **#2 (offline LocalModelCache `pvc://`)**, **#3 (stuck-ISVC + LocalModelCache finalizer)**, **#4 (`localModel.defaultJobImage` ConfigMap)**, **#5 (LocalModelCache chown ordering)** are all **MOOT — feature removed**. The `kserve-localmodel-controller-manager` and `llmisvc-controller-manager` controllers were filtered out of the build along with their CRDs, RBAC, webhooks, samples, and dedicated guides. The historical record below preserves these issues for audit trail; they no longer apply to the shipping product. The remaining issues (#1 install.sh ns rewrite, #6 setup-credentials, #7 webhook probe, #8 generator push gate) are core InferenceService concerns and remain in scope.
 
 ---
 

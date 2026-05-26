@@ -187,7 +187,7 @@ kubectl get pods -n olm   # wait until all pods are Running
   - `OPERATOR_NS=<ns>` on `deploy-bundle.sh` (Option A / OLM)
   - `SYSTEM_NS=<ns>` on `setup-credentials.sh` (pull-secret target)
 - **Runtime-control namespace** (Design D #2) — baked default `kserve`. Where the KServe controllers + webhooks + the `KServeRawMode` CR live. Pick a custom name via `--install-mode SingleNamespace=<ns>` (Option A), `KSERVE_NS=<ns>` env var on `install-operator-deployment.sh` (Option B), or `KSERVE_NAMESPACE=<ns>` env var on `install.sh` (Option C).
-- **Workload namespace** (Design D #3, NEW) — baked default `default`. Where the user's `InferenceService` / `LLMInferenceService` and predictor pods live. Override via `KSERVE_WORKLOAD_NS=<ns>` (single team) or `KSERVE_WORKLOAD_NS=<ns1>,<ns2>,...` (multi-team) env var on `setup-credentials.sh`, and pass `-n "${KSERVE_WORKLOAD_NS:-default}"` to your `kubectl apply` commands for ISVCs.
+- **Workload namespace** (Design D #3, NEW) — baked default `default`. Where the user's `InferenceService` and predictor pods live. Override via `KSERVE_WORKLOAD_NS=<ns>` (single team) or `KSERVE_WORKLOAD_NS=<ns1>,<ns2>,...` (multi-team) env var on `setup-credentials.sh`, and pass `-n "${KSERVE_WORKLOAD_NS:-default}"` to your `kubectl apply` commands for ISVCs.
 
 ```bash
 # Pick the namespace name you want for the KServe controllers (default: 'kserve').
@@ -375,21 +375,11 @@ Once the CR is `Ready`, the steady-state pod set in the KServe namespace looks l
 kubectl get pods -n kserve
 ```
 ```
-NAME                                                    READY   STATUS    RESTARTS   AGE
-kserve-controller-manager-<rand>                        2/2     Running   0          90s
-kserve-localmodel-controller-manager-<rand>             1/1     Running   0          90s
-llmisvc-controller-manager-<rand>                       1/1     Running   0          90s
+NAME                                READY   STATUS    RESTARTS   AGE
+kserve-controller-manager-<rand>    2/2     Running   0          90s
 ```
 
-```bash
-kubectl get ds -n kserve
-```
-```
-NAME                          DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR              AGE
-kserve-localmodelnode-agent   0         0         0       0            0           kserve/localmodel=worker   90s
-```
-
-> **DaemonSet `DESIRED=0` is expected on a fresh install.** The `kserve-localmodelnode-agent` DaemonSet uses a `nodeSelector: kserve/localmodel=worker`. Until you opt nodes in (`kubectl label node <worker> kserve/localmodel=worker`), no node matches and the DaemonSet correctly schedules zero pods. This is **not a failure** — it's a feature: it lets you keep the LocalModelCache subsystem inert on clusters where you don't need per-node model caching. Once you label nodes, the DaemonSet scales up automatically. See [`extra-docs/LOCAL-MODEL-CACHE-GUIDE.md`](extra-docs/LOCAL-MODEL-CACHE-GUIDE.md) for the labeling step.
+> **Only one KServe controller pod.** Upstream KServe v0.16 ships two additional controllers (`llmisvc-controller-manager` and `kserve-localmodel-controller-manager` + a `kserve-localmodelnode-agent` DaemonSet) for `LLMInferenceService` and `LocalModelCache` features. This project filters them out at build time — see `generate-kserve-raw.sh`. If you see extra pods, you may be running an older package built before the removal.
 
 If cert-manager is missing, the phase will show `CertManagerNotFound` and the operator logs will display:
 ```
@@ -477,44 +467,7 @@ curl -s -H "Content-Type: application/json" \
 
 > **Production note:** Replace `example.com` with your real domain and point DNS to the ingress load balancer IP/hostname. No `/etc/hosts` entry needed in production.
 
-### Step 6c — *(Optional)* Test LocalModelCache (per-node model caching)
-
-`LocalModelCache` pre-fetches a model onto each labeled worker node so InferenceServices start faster and survive without internet egress. The operator package ships sample manifests in `06-sample-model/` for both **online** (gs://) and **air-gapped** (pvc://) variants.
-
-```bash
-# Quick test (requires a multinode cluster — your production cluster, or
-# any local-multinode tool like kind/k3d/minikube --nodes=3 — single-node
-# Docker Desktop cannot exercise per-node placement):
-kubectl label node <worker-1> kserve/localmodel=worker
-# LocalModelCache CRs are cluster-scoped — no -n.
-kubectl apply -f 06-sample-model/localmodelcache-nodegroup.yaml
-kubectl apply -f 06-sample-model/localmodelcache.yaml
-kubectl wait --for=jsonpath='{.status.copies.available}'=1 \
-  localmodelcache/sklearn-iris-cache --timeout=180s
-# The consumer ISVC lives in the workload ns (Design D #3).
-kubectl apply -n "${KSERVE_WORKLOAD_NS:-default}" -f 06-sample-model/localmodelcache-isvc.yaml
-# Predictor pod will mount the cached PVC (no internet pull at startup).
-```
-
-📖 **Full walkthrough** — prerequisites, dev-cluster chown workaround, online (gs://) and air-gap (Minio/HTTP) options, cleanup, troubleshooting:  
-👉 [extra-docs/LOCAL-MODEL-CACHE-GUIDE.md](extra-docs/LOCAL-MODEL-CACHE-GUIDE.md)
-
-### Step 6d — *(Optional)* Test LLMInferenceService (LLM serving via Gateway API)
-
-`LLMInferenceService` is KServe 0.16's new resource for serving large language models via Gateway API routing. The operator package ships a **smoke-only** sample (placeholder model URI) that validates the controller wiring without requiring real LLM compute.
-
-```bash
-# LLMInferenceServices live in the workload ns (Design D #3, same as ISVCs).
-kubectl apply -n "${KSERVE_WORKLOAD_NS:-default}" -f 06-sample-model/llmisvc-smoke.yaml
-# Within ~10s, the controller creates:
-kubectl get deploy llmisvc-smoke-kserve -n "${KSERVE_WORKLOAD_NS:-default}"          # Deployment (0/1, expected — placeholder model)
-kubectl get svc llmisvc-smoke-kserve-workload-svc -n "${KSERVE_WORKLOAD_NS:-default}"  # Service on port 8000
-# The reconcile pipeline (Workload → Router → Scheduler → HTTPRoute) is logged
-# by the llmisvc controller — see GUIDE for the verification commands.
-```
-
-📖 **Full walkthrough** — smoke test, Phase 2 with Gateway API CRDs + real LLM model, sizing:  
-👉 [extra-docs/LLMISVC-GUIDE.md](extra-docs/LLMISVC-GUIDE.md)
+> **Project scope:** this build ships **only the core `kserve-controller-manager`** (InferenceService serving). The `LLMInferenceService` and `LocalModelCache` features from upstream KServe v0.16 are filtered out at extraction time and intentionally not bundled. If you need LLM serving or per-node model caching, see the project history for previous commits that bundled those, or re-introduce them by reverting the filter additions in `generate-kserve-raw.sh`.
 
 ---
 

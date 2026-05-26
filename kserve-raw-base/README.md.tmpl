@@ -41,19 +41,14 @@ The installer (`install.sh`) checks for both cert-manager and python3+PyYAML and
 
 1. `02-kserve-crds`: KServe Custom Resource Definitions.
 2. `03-kserve-rbac`: KServe ClusterRoles and authentication bindings.
-3. `04-kserve-core`: The KServe Controller Manager (patched with `"defaultDeploymentMode": "RawDeployment"`, `localModel.enabled: true`, and the `selfsigned-issuer` for webhook TLS).
+3. `04-kserve-core`: The KServe Controller Manager (patched with `"defaultDeploymentMode": "RawDeployment"` and the `selfsigned-issuer` for webhook TLS).
 4. `05-kserve-runtimes`: Default Predictor Runtimes (Scikit-Learn, PyTorch, Triton, HuggingFace).
 5. `06-sample-model`: Sample manifests for testing. The directory contains:
    - `sklearn-iris.yaml` — standard iris InferenceService (online `gs://` storage).
    - `iris-input.json` — payload for the curl-based test.
-   - `localmodelcache-nodegroup.yaml`, `localmodelcache.yaml`, `localmodelcache-isvc.yaml` — **online LocalModelCache flow** (per-node model caching, `gs://` source). See the GUIDE.
-   - `airgap-localmodelcache/` — **air-gapped LocalModelCache flow** (in-cluster Minio + `s3://` source). Self-contained sub-directory with its own README and 9-step apply order. See the GUIDE for the explainer.
-   - `llmisvc-smoke.yaml` — **LLMInferenceService** smoke test (validates the controller wiring; no real LLM compute). See the GUIDE.
 6. `install.sh`: An automated deployment script handling the webhook sleep sequences.
 
-### Detailed feature walk-throughs
-- **LocalModelCache (online + offline):** `extra-docs/LOCAL-MODEL-CACHE-GUIDE.md` in the operator source tree.
-- **LLMInferenceService:** `extra-docs/LLMISVC-GUIDE.md` in the operator source tree.
+> **Project scope:** this build ships only the core `kserve-controller-manager` (InferenceService serving). The `llmisvc-controller-manager` (LLMInferenceService) and `kserve-localmodel-controller-manager` (LocalModelCache) shipped by upstream KServe v0.16 are **filtered out at extraction time** in `generate-kserve-raw.sh`. To re-introduce them, revert the filter additions in that script and regenerate.
 
 ## Installation
 Ensure you are connected to a healthy Kubernetes cluster and that **cert-manager is installed** (see above).

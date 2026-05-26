@@ -51,7 +51,7 @@ If the operator image is hosted on a private registry (e.g. Docker Hub with auth
 | | `cert-manager` | User (cluster prerequisite — `kubectl apply -f cert-manager.yaml`) | cert-manager webhook + controller (pre-install) |
 | 1 | `kserve-operator-system` (Design D #1, default; `OPERATOR_NAMESPACE`/`OPERATOR_NS`/`SYSTEM_NS` to override) | User OR `kubectl apply -f operator-deployment.yaml` | Operator pod home; OLM CatalogSource pod (Option A only) |
 | 2 | `kserve` (Design D #2, default; `KSERVE_NS`/`KSERVE_NAMESPACE` to override) | User (before deploy) | KServe controllers + webhooks + `KServeRawMode` CR. **NOT where ISVCs live.** |
-| 3 | `default` (Design D #3, default; `KSERVE_WORKLOAD_NS` to override; comma-separated multi-ns supported) | Kubernetes (always exists) | InferenceServices, LLMInferenceServices, predictor pods, model PVCs |
+| 3 | `default` (Design D #3, default; `KSERVE_WORKLOAD_NS` to override; comma-separated multi-ns supported) | Kubernetes (always exists) | InferenceServices, predictor pods, model PVCs |
 
 **OLM Infrastructure (Option A only — not ours):**
 

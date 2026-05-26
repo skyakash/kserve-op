@@ -80,7 +80,7 @@ The generated directory will contain carefully split sub-directories alongside d
 
 > **cert-manager is NOT bundled.** It is a cluster prerequisite — install it on the target cluster yourself before running `install.sh`. The numbering below intentionally starts at `02` (slot `01` is reserved for cert-manager). See [QUICK_START.md](QUICK_START.md#step-0--install-cert-manager-cluster-pre-requisite) for cert-manager install commands. The generated `install.sh` runs a pre-flight check for cert-manager CRDs and exits with a clear error if it is missing.
 
-1. **`02-kserve-crds/`**: Contains the Custom Resource Definitions (like `InferenceService`, `ClusterServingRuntime`, and `LLMInferenceServiceConfig`).
+1. **`02-kserve-crds/`**: Contains the Custom Resource Definitions (`InferenceService`, `ClusterServingRuntime`, `ServingRuntime`, `InferenceGraph`, `TrainedModel`). Upstream's `LLMInferenceService`, `LLMInferenceServiceConfig`, `LocalModelCache`, `LocalModelNode`, and `LocalModelNodeGroup` CRDs are filtered out — project scope is core InferenceService serving only.
 2. **`03-kserve-rbac/`**: Contains the necessary ClusterRoles and authentication manifests.
 3. **`04-kserve-core/`**: Contains the KServe Controller Manager deployments. **Crucially, the script patches the inline ConfigMap so `defaultDeploymentMode` is explicitly set to `RawDeployment`, and explicitly appends the `selfsigned-issuer` so webhooks can establish TLS.**
 4. **`05-kserve-runtimes/`**: Contains the out-of-the-box predictors (Scikit-Learn, PyTorch, HuggingFace).

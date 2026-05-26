@@ -54,7 +54,7 @@ The `namespaceSelector` is upstream's **anti-self-injection guard** — it preve
 
 ### Why prior tests didn't catch this
 
-Phase-1 exploration of `extra-docs/0.16-test-report.md` confirmed: in **every** test from T01 through T16, the iris/llmisvc apply command was an unqualified `kubectl apply -f sklearn-iris.yaml` (no `-n` flag). That resolved to the kubectl context default namespace, which is `default`. The `default` namespace has no `control-plane` label, so the webhook fired and storage-initializer was injected.
+Phase-1 exploration of `extra-docs/0.16-test-report.md` confirmed: in **every** test from T01 through T16, the iris apply command was an unqualified `kubectl apply -f sklearn-iris.yaml` (no `-n` flag). That resolved to the kubectl context default namespace, which is `default`. The `default` namespace has no `control-plane` label, so the webhook fired and storage-initializer was injected.
 
 T07 even sets `namespace: default` explicitly in inline YAML.
 
@@ -81,8 +81,8 @@ Adopt the **three-namespace model (Design D)**.
 | # | Role | Default name | Override env var (deploy-time) | Owner | Singleton/Plural | What lives there |
 |---|---|---|---|---|---|---|
 | 1 | **Operator-home** | `kserve-operator-system` | `OPERATOR_NAMESPACE` / `OPERATOR_NS` / `SYSTEM_NS` *(existing)* | Platform / SRE | Singleton per cluster | `p-kserve-operator-controller` Deployment + its RBAC + pull secret |
-| 2 | **Runtime-control** | `kserve` | `KSERVE_NS` / `KSERVE_NAMESPACE` *(existing)* | Platform / SRE | Singleton per cluster | `kserve-controller-manager`, `llmisvc-controller-manager`, `localmodel-controller`, webhooks, the `KServeRawMode` CR; cluster-scoped resources (CRDs, ClusterServingRuntimes) are logically owned here |
-| 3 | **Workload** *(NEW)* | `default` | **`KSERVE_WORKLOAD_NS`** *(NEW; comma-separated list supported)* | App team / data scientist | **Plural-allowed** | `InferenceService`, `LLMInferenceService`, consumer ISVCs of `LocalModelCache`, predictor pods, model PVCs, app Secrets |
+| 2 | **Runtime-control** | `kserve` | `KSERVE_NS` / `KSERVE_NAMESPACE` *(existing)* | Platform / SRE | Singleton per cluster | `kserve-controller-manager`, webhooks, the `KServeRawMode` CR; cluster-scoped resources (CRDs, ClusterServingRuntimes) are logically owned here. **(Project scope is now core-only — `llmisvc-controller-manager` and `kserve-localmodel-controller-manager` are filtered out at build time.)** |
+| 3 | **Workload** *(NEW)* | `default` | **`KSERVE_WORKLOAD_NS`** *(NEW; comma-separated list supported)* | App team / data scientist | **Plural-allowed** | `InferenceService`, predictor pods, model PVCs, app Secrets |
 
 **Rule:** no resource of ours (operator, KServe controllers, webhooks, CRDs) lives in role #3. No user workload lives in role #1 or #2.
 
@@ -151,7 +151,7 @@ See `/Users/akashdeo/.claude/plans/i-want-you-to-adaptive-bonbon.md` for the ful
 
 - **`generate-kserve-operator.sh`** — setup-credentials.sh heredoc + generator-level override table + `--help` update. ~30 line delta.
 - **`extra-docs/architecture-namespaces.md`** — superseded in place: § 7 + § 9 rewritten as Design D; Design C kept as historical subsection pointing here.
-- **`QUICK_START.md`** + **`package-readme.md.tmpl`** + **`generate-kserve-operator-README.md`** + **`LLMISVC-GUIDE.md`** + **`LOCAL-MODEL-CACHE-GUIDE.md`** + **`gaps-and-observations.md`** + **`0.16-test-report.md`** — doc sweep adding `-n "${KSERVE_WORKLOAD_NS:-default}"` to every ISVC apply example; T20 reframed as 3-way flagship; T22 split into T22a (1-ns) and T22b (multi-ns).
+- **`QUICK_START.md`** + **`package-readme.md.tmpl`** + **`generate-kserve-operator-README.md`** + **`gaps-and-observations.md`** + **`0.16-test-report.md`** — doc sweep adding `-n "${KSERVE_WORKLOAD_NS:-default}"` to every ISVC apply example; T20 reframed as 3-way flagship; T22 split into T22a (1-ns) and T22b (multi-ns). (LLMISVC-GUIDE.md and LOCAL-MODEL-CACHE-GUIDE.md were later deleted with the llmisvc + localmodel controller removal.)
 - **Memory consolidation** — canonical `namespace_design.md`; `operator_namespace_configurability.md` shrunk to a redirect stub.
 
 ---
@@ -164,7 +164,7 @@ See `/Users/akashdeo/.claude/plans/i-want-you-to-adaptive-bonbon.md` for the ful
 - **Prior in-flight architecture doc:** `extra-docs/architecture-namespaces.md` (Design C — to be superseded).
 - **Session transcript:** `~/.claude/projects/-Users-akashdeo-kserve-op/752a310c-6990-4a92-9145-8ddbf4faa550.jsonl`.
 - **Plan file:** `~/.claude/plans/i-want-you-to-adaptive-bonbon.md`.
-- **Related memory files:** `namespace_design.md` (canonical post-D), `webhook_failurepolicy_semantics.md`, `install_sh_namespace_rewrite.md`, `llmisvc_real_test_recipe.md`.
+- **Related memory files:** `namespace_design.md` (canonical post-D), `webhook_failurepolicy_semantics.md`, `install_sh_namespace_rewrite.md`.
 
 ---
 

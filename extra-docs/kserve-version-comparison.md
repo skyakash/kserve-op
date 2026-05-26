@@ -6,7 +6,9 @@ _Date: 2026-05-20_
 
 **The pipeline will run to completion on release-0.16, but the output is materially different from master and will likely fail at cluster deploy time.** The blocking issue is that 0.16's `config/default/kustomization.yaml` bundles three extra subsystems (`localmodels`, `localmodelnodes`, `llmisvc`) into the core build that master deliberately leaves out. This adds Deployments and DaemonSets that depend on additional container images not present in the operator package.
 
-**Recommendation: do not swap to release-0.16 without modifying `generate-kserve-raw.sh` to either (a) prune the extra subsystems post-build, or (b) build a narrower kustomize target.**
+> **RESOLVED (2026-05-23):** These extra subsystems are now **filtered out at extraction time** in `generate-kserve-raw.sh` (see the `DROP` dicts at the top of each kustomize step). The 0.16 build now contains only the core `kserve-controller-manager` — matching master's scope. The comparison points below remain as historical reference; the divergence they describe no longer affects our shipping artifacts.
+
+**Recommendation (historical): do not swap to release-0.16 without modifying `generate-kserve-raw.sh` to either (a) prune the extra subsystems post-build, or (b) build a narrower kustomize target.** — **This recommendation has been implemented (option a).**
 
 ---
 
