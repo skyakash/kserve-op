@@ -679,9 +679,9 @@ if [ -n "${CUSTOMER_REGISTRY}" ]; then
 #                       to the destination registry. Run on the customer
 #                       machine after transferring the archives.
 #
-# CREDENTIALS:
-#   --dest-user <u>   — Destination registry username
-#   --dest-pass <p>   — Destination registry password / token
+# CREDENTIALS (destination registry):
+#   --user <u>        — Destination registry username
+#   --pass <p>        — Destination registry password / token
 #                       (prompted interactively if not provided)
 #
 # Requires: skopeo  (brew install skopeo  /  sudo dnf install -y skopeo)
