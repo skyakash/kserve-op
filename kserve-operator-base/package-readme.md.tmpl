@@ -36,6 +36,8 @@ This package contains the fully compiled deployment manifests required to instal
 ## Prerequisites
 - A functional Kubernetes Cluster (v1.24+ recommended).
 - `kubectl` installed and configured to access your cluster with ClusterAdmin privileges.
+- For OLM deploys: `operator-sdk`. For the `--customer-registry` mirror flow: `skopeo`.
+- **No local Docker/Podman daemon is required to deploy** — the package helper scripts use only `kubectl` / `operator-sdk` / `skopeo`. (A container tool is only needed on the *builder* machine that ran `generate-kserve-operator.sh`, which supports docker or podman.)
 
 
 ## Handling Private Registries

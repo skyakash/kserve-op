@@ -3,6 +3,10 @@
 # Script:  generate-kserve-operator.sh
 # Purpose: Automatically generates a standalone Go-based Operator using
 #          Operator-SDK, pre-configured to deploy KServe Raw Mode manifests.
+#
+# Container tool: works with EITHER docker OR podman. Auto-detected (docker
+# preferred when both present); override with CONTAINER_TOOL=podman. Podman
+# users: run `podman login <registry>` before any build that pushes (-p/-o/-x).
 # ==============================================================================
 
 set -e
@@ -81,6 +85,11 @@ while [[ "$#" -gt 0 ]]; do
             echo "  --docker-username <u>  Registry username — generates setup-credentials.sh in the package"
             echo "  --docker-password <p>  Registry password/token — generates setup-credentials.sh in the package"
             echo "  --cert <path>        Inject a certificate into the trusted chain (for firewall/proxy)"
+            echo ""
+            echo "ENV:"
+            echo "  CONTAINER_TOOL       docker | podman (auto-detected; docker preferred if both present)."
+            echo "                       Podman uses native multi-arch (no buildx). Run '<tool> login <registry>'"
+            echo "                       before any push (-p / -o / -x)."
             exit 0
             ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
@@ -122,6 +131,81 @@ if [ "$CLEAN_ONLY" = true ]; then
     echo "Clean complete. Exiting..."
     exit 0
 fi
+
+# =============================================================================
+# Container tool detection (docker OR podman). Runs only for real builds —
+# the clean-only path above never reaches here, so `-c` needs no container tool.
+#
+# Honor an explicit CONTAINER_TOOL override; otherwise prefer docker, then fall
+# back to podman. NOTE: a shell `alias docker=podman` does NOT work here —
+# aliases aren't expanded in non-interactive scripts — so we detect a real
+# binary and route through wrapper functions instead.
+#
+#   CONTAINER_TOOL=podman ./generate-kserve-operator.sh ...   # force podman
+#
+# Podman has no `buildx`; multi-arch is native via `podman build --manifest`.
+# Podman also emits flat single-arch manifests by default (no BuildKit
+# provenance/SBOM attestations), so the OLM-bundle flat-manifest requirement is
+# satisfied without the `--provenance=false --sbom=false` flags docker needs.
+# =============================================================================
+if [ -n "${CONTAINER_TOOL:-}" ]; then
+    command -v "${CONTAINER_TOOL}" >/dev/null 2>&1 || { echo "ERROR: CONTAINER_TOOL='${CONTAINER_TOOL}' not found in PATH."; exit 1; }
+elif command -v docker >/dev/null 2>&1; then
+    CONTAINER_TOOL=docker
+elif command -v podman >/dev/null 2>&1; then
+    CONTAINER_TOOL=podman
+else
+    echo "ERROR: neither 'docker' nor 'podman' found in PATH. Install one, or set CONTAINER_TOOL."
+    exit 1
+fi
+echo "Using container tool: ${CONTAINER_TOOL}"
+echo "  (override with CONTAINER_TOOL=<docker|podman>; ensure you've run '${CONTAINER_TOOL} login <registry>' before a push)"
+
+# --- Container build wrappers (docker/podman-agnostic) ----------------------
+
+# Multi-arch build + push. Docker: buildx with an ephemeral builder. Podman:
+# native --platform + --manifest, then push the assembled manifest list.
+container_build_multiarch() {
+    local tag="$1" dockerfile="$2" platforms="$3"
+    if [ "${CONTAINER_TOOL}" = "docker" ]; then
+        local builder="kserve-op-builder-$$"
+        docker buildx create --name "${builder}" --use || return 1
+        if ! docker buildx build --push --platform "${platforms}" --tag "${tag}" -f "${dockerfile}" .; then
+            docker buildx rm "${builder}" 2>/dev/null || true
+            return 1
+        fi
+        docker buildx rm "${builder}" 2>/dev/null || true
+    else
+        # Podman: build all arches into a local manifest list, then push it.
+        podman manifest exists "${tag}" 2>/dev/null && podman manifest rm "${tag}"
+        podman build --platform "${platforms}" --manifest "${tag}" -f "${dockerfile}" . || return 1
+        podman manifest push --all "${tag}" "docker://${tag}" || return 1
+    fi
+}
+
+# Single-arch flat-manifest build + push (OLM bundle needs a flat manifest,
+# not a manifest list). Docker: buildx with attestations suppressed. Podman:
+# a plain build already produces a flat manifest.
+container_build_singlearch_flat() {
+    local tag="$1" dockerfile="$2" platform="$3"
+    if [ "${CONTAINER_TOOL}" = "docker" ]; then
+        docker buildx build --platform "${platform}" --provenance=false --sbom=false --push -f "${dockerfile}" -t "${tag}" .
+    else
+        podman build --platform "${platform}" -f "${dockerfile}" -t "${tag}" . && podman push "${tag}" "docker://${tag}"
+    fi
+}
+
+# Remote image existence check (post-push verification). Prefer skopeo (most
+# reliable cross-tool remote inspector); fall back to the tool's own
+# `manifest inspect`.
+container_remote_image_exists() {
+    local tag="$1"
+    if command -v skopeo >/dev/null 2>&1; then
+        skopeo inspect "docker://${tag}" >/dev/null 2>&1
+    else
+        "${CONTAINER_TOOL}" manifest inspect "${tag}" >/dev/null 2>&1
+    fi
+}
 
 # 2. Gather Interactive Parameters for Missing Inputs
 if [ -z "$TARGET_DIR_NAME" ]; then
@@ -368,34 +452,29 @@ if [[ "$BUILD_CHOICE" =~ ^[Yy]$ ]]; then
     if [ "$MULTI_PLATFORM" = true ]; then
         echo "Running multi-platform operator image build for ${IMAGE_TAG}..."
         echo "NOTE: Multi-platform build automatically pushes to the registry."
-        # We call docker buildx directly instead of 'make docker-buildx' because the
-        # Makefile target uses '-' prefix on the build line, which silently swallows
-        # errors — the image would appear to build successfully even if push failed.
-        BUILDER_NAME="kserve-op-builder-$$"
-        docker buildx create --name "${BUILDER_NAME}" --use
-        if ! docker buildx build \
-            --push \
-            --platform linux/arm64,linux/amd64 \
-            --tag "${IMAGE_TAG}" \
-            -f Dockerfile .; then
-            docker buildx rm "${BUILDER_NAME}" 2>/dev/null || true
+        # Multi-arch build+push via the container-tool-agnostic wrapper:
+        #   docker → buildx with an ephemeral builder
+        #   podman → native `podman build --manifest` + `podman manifest push`
+        # We call the wrapper directly (not 'make docker-buildx') because the
+        # Makefile target uses a '-' prefix that silently swallows push errors,
+        # and its `$(CONTAINER_TOOL) buildx` line breaks on podman.
+        if ! container_build_multiarch "${IMAGE_TAG}" Dockerfile "linux/arm64,linux/amd64"; then
             echo "ERROR: Multi-platform operator image build/push failed."
             exit 1
         fi
-        docker buildx rm "${BUILDER_NAME}" 2>/dev/null || true
         echo "The cross-platform operator image '${IMAGE_TAG}' has been successfully built and pushed!"
         # Verify it's actually on the registry
-        echo "Verifying push (docker manifest inspect)..."
-        if ! docker manifest inspect "${IMAGE_TAG}" > /dev/null 2>&1; then
+        echo "Verifying push (remote manifest inspect)..."
+        if ! container_remote_image_exists "${IMAGE_TAG}"; then
             echo "ERROR: Image ${IMAGE_TAG} not found on registry after push. Something went wrong."
             exit 1
         fi
         echo "Verification passed: ${IMAGE_TAG} is available on the registry."
 
     else
-        echo "Running 'make docker-build IMG=${IMAGE_TAG}'..."
-        if ! make docker-build IMG="${IMAGE_TAG}"; then
-            echo "ERROR: Docker build failed."
+        echo "Running 'make docker-build IMG=${IMAGE_TAG} CONTAINER_TOOL=${CONTAINER_TOOL}'..."
+        if ! make docker-build IMG="${IMAGE_TAG}" CONTAINER_TOOL="${CONTAINER_TOOL}"; then
+            echo "ERROR: Container image build failed."
             exit 1
         fi
         echo "The Operator container image '${IMAGE_TAG}' has been successfully built!"
@@ -420,9 +499,9 @@ if [ "$MULTI_PLATFORM" != true ] && [[ "$BUILD_CHOICE" =~ ^[Yy]$ || "$AUTO_PUSH"
     fi
 
     if [[ "$PUSH_CHOICE" =~ ^[Yy]$ ]]; then
-        echo "Running 'make docker-push IMG=${IMAGE_TAG}'..."
-        if ! make docker-push IMG="${IMAGE_TAG}"; then
-            echo "ERROR: Docker push failed."
+        echo "Running 'make docker-push IMG=${IMAGE_TAG} CONTAINER_TOOL=${CONTAINER_TOOL}'..."
+        if ! make docker-push IMG="${IMAGE_TAG}" CONTAINER_TOOL="${CONTAINER_TOOL}"; then
+            echo "ERROR: Container image push failed."
             exit 1
         fi
         echo "The image has been successfully pushed!"
@@ -507,17 +586,21 @@ if [ "$GEN_OLM_BUNDLE" = true ]; then
     if [[ "$BUILD_CHOICE" =~ ^[Yy]$ ]]; then
         if [ "$MULTI_PLATFORM" = true ]; then
             echo "Running multi-platform bundle build for ${BUNDLE_IMG}..."
-            # We use docker buildx directly as the default Makefile doesn't have bundle-buildx
-            # We need to make sure we use a canonical name if possible, but we'll stick to what user provided
-            docker buildx build --push --platform=linux/arm64,linux/amd64,linux/s390x,linux/ppc64le --tag "${BUNDLE_IMG}" -f bundle.Dockerfile .
+            # Multi-arch bundle build+push via the container-tool-agnostic wrapper
+            # (the default Makefile has no bundle-buildx target).
+            if ! container_build_multiarch "${BUNDLE_IMG}" bundle.Dockerfile "linux/arm64,linux/amd64,linux/s390x,linux/ppc64le"; then
+                echo "ERROR: Multi-platform OLM Bundle build/push failed."
+                exit 1
+            fi
             echo "The multi-platform OLM Bundle image '${BUNDLE_IMG}' has been successfully built and pushed!"
         else
             echo "Running OLM-compatible bundle build for ${BUNDLE_IMG}..."
-            # Detect the host architecture and normalise to a Docker platform string.
-            # This is critical: 'docker build' (and 'make bundle-build') produce a manifest LIST
-            # with BuildKit attestation data that OLM's containers/image cannot resolve to a platform.
-            # Using 'docker buildx --provenance=false --sbom=false' emits a flat single-manifest image
-            # that OLM accepts on both linux/amd64 (x86_64) and linux/arm64 (aarch64) hosts.
+            # OLM's containers/image cannot resolve a manifest LIST carrying
+            # BuildKit attestation data to a platform — it needs a FLAT
+            # single-manifest image. On docker this means buildx with
+            # --provenance=false --sbom=false; on podman a plain build already
+            # emits a flat manifest. The container_build_singlearch_flat wrapper
+            # handles both. Build for the host arch.
             HOST_ARCH=$(uname -m)
             case "${HOST_ARCH}" in
                 x86_64)  BUNDLE_PLATFORM="linux/amd64" ;;
@@ -526,13 +609,7 @@ if [ "$GEN_OLM_BUNDLE" = true ]; then
                 *)       BUNDLE_PLATFORM="linux/${HOST_ARCH}" ;;
             esac
             echo "Detected host architecture: ${HOST_ARCH} → building for ${BUNDLE_PLATFORM}"
-            if ! docker buildx build \
-                --platform "${BUNDLE_PLATFORM}" \
-                --provenance=false \
-                --sbom=false \
-                --push \
-                -f bundle.Dockerfile \
-                -t "${BUNDLE_IMG}" .; then
+            if ! container_build_singlearch_flat "${BUNDLE_IMG}" bundle.Dockerfile "${BUNDLE_PLATFORM}"; then
                 echo "ERROR: OLM Bundle build failed."
                 exit 1
             fi
@@ -542,7 +619,7 @@ if [ "$GEN_OLM_BUNDLE" = true ]; then
         echo "Skipping OLM Bundle image build."
     fi
 
-    # Note: For single-platform OLM builds, the docker buildx --push above already pushed the image.
+    # Note: For single-platform OLM builds, the wrapper's --push above already pushed the image.
     # The separate bundle-push step is only needed for non-push local multi-platform builds (not used here).
 fi
 

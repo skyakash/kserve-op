@@ -15,10 +15,10 @@ Before running the script, ensure you have the following tools installed on your
 | Operator SDK | v1.42.0+ | Scaffolds and builds the Go operator |
 | Go | v1.21+ | Compiles the operator controller |
 | Make | 3.81+ | Runs Operator-SDK Makefile targets |
-| Docker | v20.10+ | Builds and pushes container images |
+| Docker **or** Podman | Docker v20.10+ / Podman v4+ | Builds and pushes container images (auto-detected; see "Building with Podman" below) |
 | yq | v4+ | Patches OLM bundle CSV `installModes` |
 | Kustomize | v5.0+ | Generates deployment manifests (auto-downloaded; global install recommended for air-gapped) |
-| skopeo | v1.0+ | **Optional** — copies images between registries when using `--customer-registry` |
+| skopeo | v1.0+ | **Optional** — copies images between registries when using `--customer-registry`; also used (if present) for the post-push image-existence verify |
 | OLM | v0.28+ | Required **only** on the target cluster when using `-o` flag |
 
 ### Installing Prerequisites
@@ -74,6 +74,19 @@ OLM must be pre-installed on your **Kubernetes cluster** (not the build machine)
 operator-sdk olm install
 kubectl get pods -n olm   # wait until all pods are Running
 ```
+
+### Building with Podman (no Docker)
+
+The script works with **either docker or podman** — no Docker daemon required. It auto-detects the container tool at runtime (prefers `docker` when both are present), so a podman-only machine works out of the box.
+
+- **Force a tool:** `CONTAINER_TOOL=podman ./generate-kserve-operator.sh ...` (a shell `alias docker=podman` does **not** work — aliases aren't expanded in scripts; the script detects a real binary instead).
+- **Login before pushing:** any build that pushes (`-p`, `-o`, `-x`) needs a logged-in registry session. Use the matching tool: `podman login docker.io` (or `docker login docker.io`).
+- **macOS:** podman needs a running VM — `podman machine init && podman machine start` once per machine.
+- **Multi-arch (`-x`):** podman has no `buildx`. The script uses native multi-arch instead — `podman build --platform <list> --manifest <tag>` then `podman manifest push`. Docker users keep the existing `docker buildx` path unchanged.
+- **OLM bundle flat manifest:** docker needs `buildx --provenance=false --sbom=false` to emit an OLM-resolvable flat manifest; podman emits a flat manifest natively, so the script skips those flags on podman automatically.
+- **Verify step:** the post-push existence check uses `skopeo inspect` if skopeo is installed, else falls back to `<tool> manifest inspect`.
+
+Everything downstream (the generated package's `setup-credentials.sh`, `install-operator-deployment.sh`, `deploy-bundle.sh`, `mirror-images.sh`) already relies only on `kubectl` / `operator-sdk` / `skopeo`, all of which are container-tool-agnostic — so the deployer side needs no docker either.
 
 ## How to Run
 
