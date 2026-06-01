@@ -79,12 +79,20 @@ kubectl get pods -n olm   # wait until all pods are Running
 
 The script works with **either docker or podman** — no Docker daemon required. It auto-detects the container tool at runtime (prefers `docker` when both are present), so a podman-only machine works out of the box.
 
-- **Force a tool:** `CONTAINER_TOOL=podman ./generate-kserve-operator.sh ...` (a shell `alias docker=podman` does **not** work — aliases aren't expanded in scripts; the script detects a real binary instead).
+- **Force a tool:** `CONTAINER_TOOL=podman ./generate-kserve-operator.sh ...` (a shell `alias docker=podman` does **not** work — aliases aren't expanded in scripts; the script detects a real binary instead). If docker is *also* installed, auto-detection picks docker — you must export `CONTAINER_TOOL=podman` to force the podman path.
 - **Login before pushing:** any build that pushes (`-p`, `-o`, `-x`) needs a logged-in registry session. Use the matching tool: `podman login docker.io` (or `docker login docker.io`).
-- **macOS:** podman needs a running VM — `podman machine init && podman machine start` once per machine.
-- **Multi-arch (`-x`):** podman has no `buildx`. The script uses native multi-arch instead — `podman build --platform <list> --manifest <tag>` then `podman manifest push`. Docker users keep the existing `docker buildx` path unchanged.
+- **macOS — size the podman machine.** Defaults (2 CPU / 2 GB) will OOM the go build + bundle. Init once with:
+  ```bash
+  podman machine init --cpus 4 --memory 6144 --disk-size 40
+  podman machine start
+  ```
+- **Multi-arch (`-x`):** podman has no `buildx`. The script uses native multi-arch instead — `podman build --platform <list> --manifest <tag>` then `podman manifest push --all`. Docker users keep the existing `docker buildx` path unchanged.
+- **Multi-arch (`-x`) needs cross-arch emulation** when building `linux/amd64` on arm64 (or vice versa):
+  - **macOS:** qemu ships inside the podman machine VM — nothing to do.
+  - **Native Linux podman:** once per boot, run `podman run --rm --privileged docker.io/multiarch/qemu-user-static --reset -p yes` (or install the distro's `qemu-user-static` package permanently). Skip if you only build single-arch.
 - **OLM bundle flat manifest:** docker needs `buildx --provenance=false --sbom=false` to emit an OLM-resolvable flat manifest; podman emits a flat manifest natively, so the script skips those flags on podman automatically.
-- **Verify step:** the post-push existence check uses `skopeo inspect` if skopeo is installed, else falls back to `<tool> manifest inspect`.
+- **Short-name resolution:** always pass fully-qualified tags (e.g. `docker.io/<acct>/kserve-raw-operator:vNNN`) — podman's default registries config doesn't auto-prefix `docker.io`, so `short/name:tag` errors with `short-name did not resolve to an alias`.
+- **Verify step:** the post-push existence check uses `skopeo inspect` if skopeo is installed, else falls back to `<tool> manifest inspect`. Install skopeo (`brew install skopeo` / `dnf install -y skopeo`) for the most reliable verification.
 
 Everything downstream (the generated package's `setup-credentials.sh`, `install-operator-deployment.sh`, `deploy-bundle.sh`, `mirror-images.sh`) already relies only on `kubectl` / `operator-sdk` / `skopeo`, all of which are container-tool-agnostic — so the deployer side needs no docker either.
 
