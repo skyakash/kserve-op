@@ -16,7 +16,7 @@ Supported build environments: **macOS** and **RHEL/Linux x86_64**.
 |---|---|---|
 | Go v1.21+ | `brew install go` | [go.dev/dl](https://go.dev/dl) tarball |
 | Operator SDK v1.42+ | `brew install operator-sdk` | Binary from GitHub releases |
-| Docker v20.10+ **or** Podman v4+ | Docker Desktop, or `brew install podman && podman machine init && podman machine start` | `dnf install docker-ce` (see [docs.docker.com](https://docs.docker.com/engine/install/rhel/)) or `dnf install podman` |
+| Docker v20.10+ **or** Podman v4+ | Docker Desktop, or `brew install podman && podman machine init --cpus 4 --memory 6144 --disk-size 40 && podman machine start` (defaults of 2 CPU / 2 GB OOM the build) | `dnf install docker-ce` (see [docs.docker.com](https://docs.docker.com/engine/install/rhel/)) or `dnf install podman` |
 | yq v4+ | `brew install yq` | `sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 && sudo chmod +x /usr/local/bin/yq` |
 | kubectl | `brew install kubectl` | [kubernetes.io/docs/tasks/tools](https://kubernetes.io/docs/tasks/tools/) |
 | Kustomize v5+ | `brew install kustomize` | `curl -s .../install_kustomize.sh \| bash` |
@@ -24,7 +24,7 @@ Supported build environments: **macOS** and **RHEL/Linux x86_64**.
 
 > See [generate-kserve-operator-README.md](./generate-kserve-operator-README.md#installing-prerequisites) for exact copy-paste install commands per platform.
 
-> **Docker or Podman?** `generate-kserve-operator.sh` works with either — it auto-detects (docker preferred when both are present). Force a choice with `CONTAINER_TOOL=podman ./generate-kserve-operator.sh ...`. Podman needs no `buildx` (multi-arch is native). Before any build that pushes (`-p` / `-o` / `-x`), log in with the matching tool: `docker login <registry>` **or** `podman login <registry>`. On macOS, podman also needs a running VM: `podman machine start`.
+> **Docker or Podman?** `generate-kserve-operator.sh` works with either — it auto-detects (**docker preferred when both are present**, so if you want podman on a machine that also has docker, you **must** export `CONTAINER_TOOL=podman` in every shell). Podman needs no `buildx` (multi-arch is native). Before any build that pushes (`-p` / `-o` / `-x`), log in with the matching tool: `docker login <registry>` **or** `podman login <registry>`. On macOS, podman needs a running, **sized** VM (see prereqs table — defaults OOM the build). For multi-arch `-x` on native Linux podman you'll also need qemu-user-static — see [generate-kserve-operator-README.md § Building with Podman](generate-kserve-operator-README.md#building-with-podman-no-docker) for the full podman-only walkthrough (machine sizing, qemu, short-name resolution, troubleshooting).
 
 ### Cleaning Up / Starting Fresh
 
