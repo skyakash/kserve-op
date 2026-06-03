@@ -48,7 +48,7 @@ The installer (`install.sh`) checks for both cert-manager and python3+PyYAML and
    - `iris-input.json` — payload for the curl-based test.
 6. `install.sh`: An automated deployment script handling the webhook sleep sequences.
 
-> **Project scope:** this build ships only the core `kserve-controller-manager` (InferenceService serving). The `llmisvc-controller-manager` (LLMInferenceService) and `kserve-localmodel-controller-manager` (LocalModelCache) shipped by upstream KServe v0.16 are **filtered out at extraction time** in `generate-kserve-raw.sh`. To re-introduce them, revert the filter additions in that script and regenerate.
+> **Project scope:** this build ships only the core `kserve-controller-manager` (InferenceService serving). The `llmisvc-controller-manager` (LLMInferenceService) and `kserve-localmodel-controller-manager` (LocalModelCache) shipped by upstream KServe v0.17 are **filtered out at extraction time** in `generate-kserve-raw.sh`. To re-introduce them, revert the filter additions in that script and regenerate.
 
 ## Installation
 Ensure you are connected to a healthy Kubernetes cluster and that **cert-manager is installed** (see above).

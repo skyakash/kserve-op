@@ -43,7 +43,7 @@ If you are re-running the build (e.g. after a cluster reset), clean both generat
 # -z points at the bundled KServe source zip; the script auto-extracts
 # it into ./kserve-source/ (gitignored). After the first run, kserve-source/
 # is reused — -z is only required when the directory doesn't exist.
-./generate-kserve-raw.sh -t p-kserve-raw -z kserve-release-0.16.zip
+./generate-kserve-raw.sh -t p-kserve-raw -z kserve-release-0.17.zip
 ```
 
 ### Step 2 — Generate operator, build image, and create OLM bundle
@@ -343,7 +343,7 @@ Host prerequisites for `install.sh`:
 
 ```bash
 # Generate the standalone deployment package (one-time):
-./generate-kserve-raw.sh -t p-kserve-raw -z kserve-release-0.16.zip
+./generate-kserve-raw.sh -t p-kserve-raw -z kserve-release-0.17.zip
 
 # Default — install into "kserve" namespace
 cd p-kserve-raw && bash install.sh
@@ -381,7 +381,7 @@ NAME                                READY   STATUS    RESTARTS   AGE
 kserve-controller-manager-<rand>    2/2     Running   0          90s
 ```
 
-> **Only one KServe controller pod.** Upstream KServe v0.16 ships two additional controllers (`llmisvc-controller-manager` and `kserve-localmodel-controller-manager` + a `kserve-localmodelnode-agent` DaemonSet) for `LLMInferenceService` and `LocalModelCache` features. This project filters them out at build time — see `generate-kserve-raw.sh`. If you see extra pods, you may be running an older package built before the removal.
+> **Only one KServe controller pod.** Upstream KServe v0.17 ships two additional controllers (`llmisvc-controller-manager` and `kserve-localmodel-controller-manager` + a `kserve-localmodelnode-agent` DaemonSet) for `LLMInferenceService` and `LocalModelCache` features. This project filters them out at build time — see `generate-kserve-raw.sh`. If you see extra pods, you may be running an older package built before the removal.
 
 If cert-manager is missing, the phase will show `CertManagerNotFound` and the operator logs will display:
 ```
@@ -469,7 +469,7 @@ curl -s -H "Content-Type: application/json" \
 
 > **Production note:** Replace `example.com` with your real domain and point DNS to the ingress load balancer IP/hostname. No `/etc/hosts` entry needed in production.
 
-> **Project scope:** this build ships **only the core `kserve-controller-manager`** (InferenceService serving). The `LLMInferenceService` and `LocalModelCache` features from upstream KServe v0.16 are filtered out at extraction time and intentionally not bundled. If you need LLM serving or per-node model caching, see the project history for previous commits that bundled those, or re-introduce them by reverting the filter additions in `generate-kserve-raw.sh`.
+> **Project scope:** this build ships **only the core `kserve-controller-manager`** (InferenceService serving). The `LLMInferenceService` and `LocalModelCache` features from upstream KServe v0.17 are filtered out at extraction time and intentionally not bundled. If you need LLM serving or per-node model caching, see the project history for previous commits that bundled those, or re-introduce them by reverting the filter additions in `generate-kserve-raw.sh`.
 
 ---
 

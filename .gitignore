@@ -6,7 +6,11 @@ bundle-*/
 
 # Ignore local KServe source repository (auto-extracted by generate-kserve-raw.sh from the bundled zip)
 kserve-source/
+kserve-source.*/
 kserve-master/
+
+# Transient probe output from generate-kserve-raw.sh runs against throwaway targets (e.g. -t ./tmp/...)
+tmp/
 
 # Local version-comparison workspace (analysis only, not for commit)
 kserve-diff/

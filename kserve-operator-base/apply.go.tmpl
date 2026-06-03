@@ -228,7 +228,7 @@ func rewriteSvcDNSNamespace(dns, targetNS string) string {
 // returns an error (prompting the reconciler to requeue) if pods are still not
 // ready after 10 minutes. The 10-minute window accommodates first-run image
 // pulls for the core kserve-controller-manager deployment. (Project scope was
-// narrowed to core InferenceService only; upstream KServe v0.16's extra
+// narrowed to core InferenceService only; upstream KServe's extra
 // llmisvc + localmodel controllers are filtered out at extraction time, so
 // only one Deployment ships now and the waiter has fewer pods to track.)
 func waitForNamespacePodsReady(ctx context.Context, c client.Client, namespace string) error {

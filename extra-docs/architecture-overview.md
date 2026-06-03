@@ -19,7 +19,7 @@ graph TB
 
     subgraph PHASE1[Phase 1 — Build Factory]
         direction LR
-        ZIP[kserve-release-0.16.zip]:::source
+        ZIP[kserve-release-0.17.zip]:::source
         GEN1[generate-kserve-raw.sh]:::gen
         GEN2[generate-kserve-operator.sh]:::gen
         ZIP --> GEN1
