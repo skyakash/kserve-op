@@ -82,6 +82,23 @@ sudo dnf install -y skopeo   # optional — only needed for --customer-registry 
 # Docker Engine: https://docs.docker.com/engine/install/rhel/
 ```
 
+### ✅ Verify your prerequisites before building
+
+The repo ships two diagnostic scripts at the root:
+
+```bash
+bash check-build-prereqs.sh         # smart pass/fail; exits 1 on any missing/old REQUIRED tool
+bash print-build-versions.sh        # passive dump (handy for bug reports)
+```
+
+Run `check-build-prereqs.sh` before the first build. It catches the most common build-time failures (PyYAML < 5.1, yq v3, kustomize v4, operator-sdk < 1.42) and tells you exactly what to upgrade. Wire it as a gate:
+
+```bash
+bash check-build-prereqs.sh && bash generate-kserve-operator.sh -t ... -i ... -b -p -o
+```
+
+See [QUICK_START.md § Validated toolchain versions](QUICK_START.md#validated-toolchain-versions-known-good-for-kserve-v0170) for sample passing/failing output, the full criticality breakdown (🔴 must match / 🟡 should match / 🟢 nice to match), and the `--customer-registry` mode that elevates skopeo to REQUIRED.
+
 ---
 
 ## 🏗️ 1. KServe Raw Mode Extractor (`generate-kserve-raw.sh`)
