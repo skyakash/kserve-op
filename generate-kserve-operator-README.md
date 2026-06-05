@@ -69,6 +69,23 @@ sudo systemctl enable --now docker
 sudo usermod -aG docker $USER   # allow non-root docker usage (re-login required)
 ```
 
+### ✅ Verify prerequisites before building
+
+The repo ships a smart pre-flight script at the root that catches the most common build-time failures (PyYAML < 5.1, yq v3, kustomize v4, operator-sdk < 1.42) and tells you exactly what to upgrade:
+
+```bash
+bash check-build-prereqs.sh                          # exits 1 on any REQUIRED miss
+bash check-build-prereqs.sh --customer-registry      # also requires skopeo
+```
+
+Wire it as a gate so the build doesn't even start with a broken toolchain:
+
+```bash
+bash check-build-prereqs.sh && bash generate-kserve-operator.sh -t ... -i ... -b -p -o
+```
+
+For passive version printing (handy for bug reports): `bash print-build-versions.sh`. See [QUICK_START.md § Validated toolchain versions](QUICK_START.md#validated-toolchain-versions-known-good-for-kserve-v0160) for sample output and the 🔴/🟡/🟢 criticality breakdown.
+
 ### Installing OLM on the Target Cluster *(required for `-o` flag)*
 
 OLM must be pre-installed on your **Kubernetes cluster** (not the build machine) before deploying via bundle:

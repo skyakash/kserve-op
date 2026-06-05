@@ -39,6 +39,17 @@ curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack
 sudo mv kustomize /usr/local/bin/
 ```
 
+### ✅ Verify prerequisites before running
+
+The repo ships a smart pre-flight script at the root that probes every tool the generator scripts use (Go, operator-sdk, docker/podman, Python+PyYAML, yq, kustomize, kubectl, skopeo) and prints a colored pass/fail verdict:
+
+```bash
+bash check-build-prereqs.sh        # exits 0 if safe to build, 1 on any REQUIRED miss
+bash print-build-versions.sh       # passive version dump (handy for bug reports)
+```
+
+Run `check-build-prereqs.sh` once before the first build. It catches the most common toolchain mismatches (PyYAML < 5.1, yq v3, kustomize v4) before they produce cryptic mid-build errors. See [QUICK_START.md § Validated toolchain versions](QUICK_START.md#validated-toolchain-versions-known-good-for-kserve-v0160) for the full criticality breakdown (🔴 must match / 🟡 should match / 🟢 nice to match) and sample passing/failing output.
+
 ## How to Run
 
 Execute the script from your terminal:

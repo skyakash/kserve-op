@@ -121,6 +121,8 @@ If you are re-running the build (e.g. after a cluster reset), clean both generat
 
 ---
 
+> **Before Step 1 + Step 2, verify your toolchain:** run `bash check-build-prereqs.sh` (smart pass/fail; pass `--customer-registry` if you'll use that flag). It catches the most common build-time errors (PyYAML < 5.1, yq v3, kustomize v4, operator-sdk < 1.42) BEFORE invoking the generators, so you don't waste a 5-minute build on a missing dep. Wire it as a gate: `bash check-build-prereqs.sh && ./generate-kserve-raw.sh ...`. See [§ Validated toolchain versions](#validated-toolchain-versions-known-good-for-kserve-v0160) above for the criticality breakdown and sample output.
+
 ### Step 1 — Extract KServe raw manifests
 ```bash
 # Run from the kserve-op workspace directory.
