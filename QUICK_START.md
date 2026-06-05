@@ -54,25 +54,59 @@ The reference build + the 16-test e2e validation (see [`extra-docs/0.16-test-rep
 - `kserve/storage-initializer:v0.16.0`
 - `quay.io/brancz/kube-rbac-proxy:v0.18.0` (inherited from upstream)
 
-#### Self-diagnostic — print your version stack
+#### Self-diagnostic — two scripts at the repo root
 
-If a build fails with a tool-version-related error, run this and compare against the table above. Anything below a 🔴 floor will likely be your next failure even after you fix the current one.
+The repo ships two scripts so you don't have to copy-paste a diagnostic snippet from this doc:
+
+| Script | What it does | Exit code |
+|---|---|---|
+| **`bash check-build-prereqs.sh`** | Smart pre-flight: parses each tool's `--version` output, compares against the 🔴 must-match floors above, prints a colored pass/fail table | **0** = safe to build / **1** = at least one REQUIRED check failed |
+| `bash print-build-versions.sh` | Passive dump of every tool's version + OS info — handy for bug reports, no checking | 0 always |
+
+**Recommended workflow — run the smart check before invoking the build:**
 
 ```bash
-echo "=== build-side ==="
-go version
-operator-sdk version
-docker version --format 'Client {{.Client.Version}} / Server {{.Server.Version}}'   # or: podman --version
-python3 --version
-python3 -c 'import yaml; print(f"PyYAML {yaml.__version__}")'
-yq --version
-kustomize version
-kubectl version --client
-skopeo --version   # only if using --customer-registry
-echo "=== os ==="
-uname -a
-cat /etc/os-release 2>/dev/null | grep -E '^(NAME|VERSION)='
+bash check-build-prereqs.sh && bash generate-kserve-operator.sh ...
 ```
+
+If you're using the customer-registry flow (`--customer-registry` flag), pass it to the pre-flight too so `skopeo` is elevated to REQUIRED:
+
+```bash
+bash check-build-prereqs.sh --customer-registry
+```
+
+Sample output (passing machine):
+
+```
+REQUIRED (failures block the build):
+  ✓ operator-sdk 1.42.2       (need ≥1.42)
+  ✓ PyYAML       6.0.3        (need ≥5.1)
+  ✓ yq           4.53.2       (need ≥4.0)
+  ✓ kustomize    5.8.1        (need ≥5.0)
+  ✓ container    docker 29.5.2
+
+RECOMMENDED (older may surface edge-case bugs):
+  ✓ Go           1.26.3       (recommend ≥1.21)
+  ✓ Python       3.13.9       (recommend ≥3.7)
+  ✓ kubectl      1.34.1       (recommend ≥1.24)
+
+✓ All build-side prereqs OK. Safe to run generate-kserve-raw.sh and generate-kserve-operator.sh.
+```
+
+Sample output (RHEL 7 / CentOS 7 box hitting the colleague's PyYAML issue):
+
+```
+REQUIRED (failures block the build):
+  ✓ operator-sdk 1.42.0       (need ≥1.42)
+  ✗ PyYAML       3.13         TOO OLD (need ≥5.1)
+  ✗ yq           3.4.1        TOO OLD (need ≥4.0)
+  ...
+
+✗ 2 REQUIRED check(s) failed. Fix before running the build scripts.
+  See QUICK_START.md § Validated toolchain versions for upgrade commands per platform.
+```
+
+> **Deploy-time prereqs** (cert-manager, OLM, Python+PyYAML for install.sh) are checked automatically by the customer-facing scripts in the generated package — `setup-credentials.sh` for OLM, `install.sh` for the non-OLM path, `install-operator-deployment.sh` for the direct-manifest path. You don't need to run a separate pre-flight at deploy time.
 
 > **Docker or Podman?** `generate-kserve-operator.sh` works with either — it auto-detects (**docker preferred when both are present**, so if you want podman on a machine that also has docker, you **must** export `CONTAINER_TOOL=podman` in every shell). Podman needs no `buildx` (multi-arch is native). Before any build that pushes (`-p` / `-o` / `-x`), log in with the matching tool: `docker login <registry>` **or** `podman login <registry>`. On macOS, podman needs a running, **sized** VM (see prereqs table — defaults OOM the build). For multi-arch `-x` on native Linux podman you'll also need qemu-user-static — see [generate-kserve-operator-README.md § Building with Podman](generate-kserve-operator-README.md#building-with-podman-no-docker) for the full podman-only walkthrough (machine sizing, qemu, short-name resolution, troubleshooting).
 
