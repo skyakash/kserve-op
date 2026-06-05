@@ -75,6 +75,13 @@ Items #4 and #5 are stretch goals — wait until you've shipped the first three.
 
 ## Recently fixed (post-0.16 validation)
 
+### `generate-kserve-operator.sh` proxy support for corporate firewalls — FIXED
+**Symptom (customer build, 2026-06-XX):** Build succeeded past `--cert` injection (TLS trust restored) but failed at `[builder 7/11] RUN go mod download` with `read tcp ... : read: connection reset by peer` from `proxy.golang.org`. Customer was behind a corporate firewall doing TLS intercept; the firewall expected traffic via its egress proxy but the build container had no `HTTP_PROXY`/`HTTPS_PROXY` env vars set, so Go module fetches tried direct egress and the firewall reset the TCP.
+
+**Root cause:** `--cert <ca.crt>` only handles the TLS-trust layer (so the proxy's cert verifies). It does NOT configure the routing layer (where to send requests). Both layers are independent failure modes behind a corporate firewall.
+
+**Fix:** New CLI flags `--http-proxy <url>`, `--https-proxy <url>`, `--no-proxy <list>`. All three are mandatory together — partial use is rejected at parse time. When supplied, the script injects six `ENV` directives (UPPERCASE + lowercase variants) at the top of the Dockerfile builder stage immediately after `FROM golang ... AS builder`, exactly mirroring `--cert`'s scope guarantee: never baked into the final distroless image. Cross-platform Dockerfile patch uses Python `re.sub` to avoid BSD-vs-GNU sed multi-line incompatibilities. Doc updated across QUICK_START + README + generate-kserve-operator-README with failure-mode table and combined `--cert` + proxy example.
+
 ### Design C → Design D pivot: workload namespace separated from runtime-control — FIXED
 **Symptom (T19 attempt, 2026-05-22):** After cluster reset and a fresh build, iris ISVC deployed via `kubectl -n kserve apply -f sklearn-iris.yaml` crashed with `FileNotFoundError: /mnt/models`. The predictor pod had no `storage-initializer` init container.
 
