@@ -24,6 +24,56 @@ Supported build environments: **macOS** and **RHEL/Linux x86_64**.
 
 > See [generate-kserve-operator-README.md](./generate-kserve-operator-README.md#installing-prerequisites) for exact copy-paste install commands per platform.
 
+### Validated toolchain versions (known-good for KServe v0.17.0)
+
+The reference build + the 16-test e2e validation (see [`extra-docs/0.17-test-report.md`](extra-docs/0.17-test-report.md)) were performed with these exact versions on macOS arm64. **For reproducible results, match the 🔴 must-match floors at minimum.** The 🟡 should-match items are unlikely to bite you but have known compatibility edges. The 🟢 nice-to-match items behave consistently across recent versions.
+
+| Tool | Validated | Project minimum | Criticality | Why |
+|---|---|---|---|---|
+| Go | 1.26.3 | 1.21+ | 🟡 should match | operator-sdk's generated `go.mod` requires it |
+| operator-sdk | 1.42.2 | 1.42+ | 🔴 must match | older versions scaffold incompatible boilerplate + bundle CSV format |
+| Docker / Podman | docker 29.5.2 / podman 4+ | 20.10+ / v4+ | 🟢 nice | builds + pushes images; 20.10+ all behave similarly |
+| Python | 3.13.9 (3.6 also works) | 3.7+ recommended | 🟢 nice | scripts use basic features only |
+| **PyYAML** | **6.0.3** | **5.1+** | 🔴 must match | the `sort_keys=False` kwarg used in the YAML rewrites was added in 5.1 |
+| yq | v4.53.2 | v4+ | 🔴 must match | **v3 syntax is incompatible** for CSV install-mode patching |
+| Kustomize | v5.8.1 | v5+ | 🔴 must match | **v4 syntax differs**, doesn't support `labels:` field used in newer KServe `config/default` |
+| kubectl | v1.34.1 | v1.24+ | 🟡 should match | Server-side apply behaviors stabilized in 1.24+ |
+| skopeo (customer-registry only) | 1.22.2 | any recent | 🟢 nice | image mirroring; only needed with `--customer-registry` |
+| make | GNU Make 3.81 | any | 🟢 nice | drives operator-sdk make targets |
+
+**Cluster-side toolchain (deploy time, NOT build time):**
+
+| Tool | Validated | Notes |
+|---|---|---|
+| cert-manager | **v1.17.2** | per [`0.17-test-report.md`](extra-docs/0.17-test-report.md) §T01 — webhook TLS dependency |
+| OLM | v0.29.0 (auto-installed by `operator-sdk olm install`) | bundles + CSV machinery |
+| Kubernetes | 1.27–1.34 | KServe v0.17.0 supported range |
+
+**Image pins baked into the build** (set by `generate-kserve-raw.sh` at extraction time — no per-customer choice):
+- `kserve/kserve-controller:v0.17.0`
+- `kserve/storage-initializer:v0.17.0`
+- `quay.io/brancz/kube-rbac-proxy:v0.18.0` (inherited from upstream)
+
+#### Self-diagnostic — print your version stack
+
+If a build fails with a tool-version-related error, run this and compare against the table above. Anything below a 🔴 floor will likely be your next failure even after you fix the current one.
+
+```bash
+echo "=== build-side ==="
+go version
+operator-sdk version
+docker version --format 'Client {{.Client.Version}} / Server {{.Server.Version}}'   # or: podman --version
+python3 --version
+python3 -c 'import yaml; print(f"PyYAML {yaml.__version__}")'
+yq --version
+kustomize version
+kubectl version --client
+skopeo --version   # only if using --customer-registry
+echo "=== os ==="
+uname -a
+cat /etc/os-release 2>/dev/null | grep -E '^(NAME|VERSION)='
+```
+
 > **Docker or Podman?** `generate-kserve-operator.sh` works with either — it auto-detects (**docker preferred when both are present**, so if you want podman on a machine that also has docker, you **must** export `CONTAINER_TOOL=podman` in every shell). Podman needs no `buildx` (multi-arch is native). Before any build that pushes (`-p` / `-o` / `-x`), log in with the matching tool: `docker login <registry>` **or** `podman login <registry>`. On macOS, podman needs a running, **sized** VM (see prereqs table — defaults OOM the build). For multi-arch `-x` on native Linux podman you'll also need qemu-user-static — see [generate-kserve-operator-README.md § Building with Podman](generate-kserve-operator-README.md#building-with-podman-no-docker) for the full podman-only walkthrough (machine sizing, qemu, short-name resolution, troubleshooting).
 
 ### Cleaning Up / Starting Fresh
