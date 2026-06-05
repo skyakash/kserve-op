@@ -37,7 +37,7 @@ Before running the generation scripts, ensure the following dependencies are ins
 | Go | v1.21+ | `generate-kserve-operator.sh` |
 | Operator SDK | v1.42+ | `generate-kserve-operator.sh` |
 | Docker | v20.10+ | `generate-kserve-operator.sh` |
-| Python 3 + pyyaml | Any | `generate-kserve-raw.sh` |
+| Python 3.7+ + pyyaml 5.1+ | Both | `generate-kserve-raw.sh` + `generate-kserve-operator.sh` (the generator's YAML rewrites pass `sort_keys=False`, added in PyYAML 5.1) |
 | yq | v4+ | `generate-kserve-operator.sh` (`--olm` flag) |
 | kubectl | v1.24+ | Both scripts |
 | Kustomize | v5.0+ | `generate-kserve-raw.sh` (global); auto-downloaded for operator |
@@ -47,7 +47,7 @@ Before running the generation scripts, ensure the following dependencies are ins
 **macOS (Homebrew):**
 ```bash
 brew install go operator-sdk yq kustomize python kubectl
-pip3 install pyyaml
+pip3 install 'pyyaml>=5.1'
 brew install skopeo   # optional — only needed for --customer-registry flag
 # Docker: install Docker Desktop from https://docs.docker.com/desktop/mac/
 ```
@@ -74,7 +74,7 @@ sudo mv kustomize /usr/local/bin/
 
 # Python + pyyaml, kubectl, Docker
 sudo dnf install -y python3 python3-pip
-pip3 install pyyaml
+pip3 install 'pyyaml>=5.1'
 sudo dnf install -y skopeo   # optional — only needed for --customer-registry flag
 # kubectl: https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/
 # Docker Engine: https://docs.docker.com/engine/install/rhel/

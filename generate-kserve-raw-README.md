@@ -11,7 +11,7 @@ Before running the script, ensure you meet the following requirements on your lo
 
 1. **KServe Source Code**: The `kserve-master` directory must exist in the exact same parent directory as this script. The script uses Kustomize to build manifests directly from this source code.
 2. **Kustomize**: The `kustomize` CLI tool must be installed and available in your system `$PATH` (The KServe `Makefile` normally installs this in `bin/kustomize`, but global availability is recommended).
-3. **Python 3 + pyyaml**: Python is required to safely inject the `RawDeployment` configuration directly into the KServe `inferenceservice-config` ConfigMap block without corrupting the YAML structure.
+3. **Python 3.7+ + pyyaml 5.1+**: Python is required to safely inject the `RawDeployment` configuration directly into the KServe `inferenceservice-config` ConfigMap block without corrupting the YAML structure. **PyYAML 5.1 or later is required** — the script uses `yaml.safe_dump_all(..., sort_keys=False)` to preserve key order, and `sort_keys` was added in PyYAML 5.1 (March 2019). Older PyYAML (e.g. the one shipped with RHEL 7 / CentOS 7's Python 3.6) errors with `TypeError: safe_dump_all() got an unexpected keyword argument 'sort_keys'` — fix by `pip3 install --upgrade pyyaml`.
 
 ### Installing Prerequisites
 If you are missing the required tools, you can install them using the following commands:
@@ -19,14 +19,14 @@ If you are missing the required tools, you can install them using the following 
 **macOS (Homebrew):**
 ```bash
 brew install kustomize python
-pip3 install pyyaml
+pip3 install 'pyyaml>=5.1'
 ```
 
 **Linux — Ubuntu / Debian:**
 ```bash
 sudo apt update
 sudo apt install -y python3 python3-pip
-pip3 install pyyaml
+pip3 install 'pyyaml>=5.1'
 curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
 sudo mv kustomize /usr/local/bin/
 ```
@@ -34,7 +34,7 @@ sudo mv kustomize /usr/local/bin/
 **Linux — RHEL / CentOS / Fedora (x86_64):**
 ```bash
 sudo dnf install -y python3 python3-pip
-pip3 install pyyaml
+pip3 install 'pyyaml>=5.1'
 curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
 sudo mv kustomize /usr/local/bin/
 ```
