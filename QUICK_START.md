@@ -149,7 +149,22 @@ If you are re-running the build (e.g. after a cluster reset), clean both generat
 
 > **Version tagging:** Replace `v300` with your actual release version (e.g. `v302`, `v303`). Use a new tag for each build to avoid stale image caches on the cluster.
 
-> **Behind a corporate proxy or TLS-intercepting firewall?** Add `--cert /path/to/corporate-ca.crt` to the command above. The CA gets injected into the Dockerfile builder stage's trust store so `go mod download` and other build-time fetches can talk to the proxy. The cert is **only in the builder stage** — not in the final distroless operator image — so it doesn't end up shipped to customers. See [generate-kserve-operator-README.md](generate-kserve-operator-README.md) (§ "Building Behind a Corporate Proxy") for details and a verification recipe.
+> **Behind a corporate proxy or TLS-intercepting firewall?** You'll typically need **two** flags together:
+> - `--cert /path/to/corporate-ca.crt` — injects the corp CA into the Dockerfile builder's trust store so TLS handshakes verify cleanly.
+> - `--http-proxy <url> --https-proxy <url> --no-proxy <list>` — all three together (the script rejects partial use) — injects `ENV HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` (and lowercase variants) into the builder stage so `go mod download` and other build-time fetches actually *route* through the proxy. Without these, `go mod download` will get `connection reset by peer` even with the cert.
+>
+> Both flags are scoped to the **builder stage only** — neither the CA nor the proxy URL is baked into the final distroless operator image, so nothing leaks to customers. Example:
+>
+> ```bash
+> bash generate-kserve-operator.sh \
+>   ...flags... \
+>   --cert threatpulse-ca-chain.crt \
+>   --http-proxy http://ep.threatpulse.net:80 \
+>   --https-proxy http://ep.threatpulse.net:80 \
+>   --no-proxy localhost,127.0.0.1,artifactory.apps.lab1.hcltechlab.com
+> ```
+>
+> See [generate-kserve-operator-README.md § Building Behind a Corporate Proxy](generate-kserve-operator-README.md#building-behind-a-corporate-proxy-or-tls-intercepting-firewall-cert) for the full walkthrough + verification recipe.
 
 ### Step 2 (Alt) — Customer / Private Registry
 

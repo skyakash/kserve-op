@@ -28,6 +28,9 @@ DOCKER_SERVER="docker.io"
 DOCKER_USERNAME=""
 DOCKER_PASSWORD=""
 TRUST_CERT_PATH=""
+HTTP_PROXY_URL=""
+HTTPS_PROXY_URL=""
+NO_PROXY_LIST=""
 # Valid values: AllNamespaces | OwnNamespace | SingleNamespace | MultiNamespace
 INSTALL_MODE="SingleNamespace"
 CUSTOMER_REGISTRY=""
@@ -65,6 +68,9 @@ while [[ "$#" -gt 0 ]]; do
         --docker-username) DOCKER_USERNAME="$2"; shift 2 ;;
         --docker-password) DOCKER_PASSWORD="$2"; shift 2 ;;
         --cert) TRUST_CERT_PATH="$2"; shift 2 ;;
+        --http-proxy)  HTTP_PROXY_URL="$2";  shift 2 ;;
+        --https-proxy) HTTPS_PROXY_URL="$2"; shift 2 ;;
+        --no-proxy)    NO_PROXY_LIST="$2";   shift 2 ;;
         -h|--help)
             echo "Usage: $0 [options]"
             echo "Options:"
@@ -85,6 +91,16 @@ while [[ "$#" -gt 0 ]]; do
             echo "  --docker-username <u>  Registry username — generates setup-credentials.sh in the package"
             echo "  --docker-password <p>  Registry password/token — generates setup-credentials.sh in the package"
             echo "  --cert <path>        Inject a certificate into the trusted chain (for firewall/proxy)"
+            echo "  --http-proxy <url>   HTTP proxy URL for builder stage (corporate firewall)."
+            echo "                       e.g. http://ep.threatpulse.net:80"
+            echo "  --https-proxy <url>  HTTPS proxy URL for builder stage."
+            echo "                       Typically the SAME URL as --http-proxy."
+            echo "  --no-proxy <list>    Comma-separated NO_PROXY bypass list."
+            echo "                       e.g. localhost,127.0.0.1,<internal-registry-host>"
+            echo "                       ALL THREE (--http-proxy + --https-proxy + --no-proxy) must"
+            echo "                       be supplied together, or none. Partial use is rejected."
+            echo "                       Injected as ENV in the builder stage ONLY — NOT baked"
+            echo "                       into the final distroless operator image."
             echo ""
             echo "ENV:"
             echo "  CONTAINER_TOOL       docker | podman (auto-detected; docker preferred if both present)."
@@ -105,6 +121,26 @@ case "$INSTALL_MODE" in
         exit 1
         ;;
 esac
+
+# Validate proxy flags: all-or-nothing.
+# If the user passes any of --http-proxy / --https-proxy / --no-proxy, they must
+# pass ALL THREE. This prevents the silent-misroute footgun where (say) only
+# HTTP_PROXY is set and HTTPS_PROXY is empty — Go falls back to direct, hits
+# the firewall, gets a connection-reset, and the user has no idea why because
+# the build "looks" proxied. Enforcing the trio up front surfaces the misuse
+# at the CLI rather than 6 minutes into the docker build.
+PROXY_FLAGS_SET=0
+[ -n "$HTTP_PROXY_URL"  ] && PROXY_FLAGS_SET=$((PROXY_FLAGS_SET + 1))
+[ -n "$HTTPS_PROXY_URL" ] && PROXY_FLAGS_SET=$((PROXY_FLAGS_SET + 1))
+[ -n "$NO_PROXY_LIST"   ] && PROXY_FLAGS_SET=$((PROXY_FLAGS_SET + 1))
+if [ "$PROXY_FLAGS_SET" -gt 0 ] && [ "$PROXY_FLAGS_SET" -lt 3 ]; then
+    echo "ERROR: --http-proxy, --https-proxy, and --no-proxy must be supplied together (all three) or not at all."
+    echo "       Currently set: ${HTTP_PROXY_URL:+--http-proxy} ${HTTPS_PROXY_URL:+--https-proxy} ${NO_PROXY_LIST:+--no-proxy}"
+    echo "       Example: --http-proxy http://ep.threatpulse.net:80 \\"
+    echo "                --https-proxy http://ep.threatpulse.net:80 \\"
+    echo "                --no-proxy localhost,127.0.0.1,<internal-registry-host>"
+    exit 1
+fi
 
 # Check if we only need to clean
 if [ "$CLEAN_ONLY" = true ]; then
@@ -375,6 +411,49 @@ RUN ${CERT_CMD}
         sed -i "/FROM golang/a COPY ${CERT_FILENAME} ${CERT_DEST}\nRUN ${CERT_CMD}" Dockerfile
     fi
     echo "Successfully patched Dockerfile build stage with trusted chain logic."
+fi
+
+# Handle Build-Time HTTP/HTTPS Proxy Injection (builder stage only — same
+# scope guarantee as --cert: never baked into the final distroless image).
+# Validation above ensures all three flags are present together; this block
+# only runs when the user has explicitly opted in.
+if [ -n "$HTTP_PROXY_URL" ] && [ -n "$HTTPS_PROXY_URL" ] && [ -n "$NO_PROXY_LIST" ]; then
+    echo "Injecting HTTP_PROXY='${HTTP_PROXY_URL}' HTTPS_PROXY='${HTTPS_PROXY_URL}' NO_PROXY='${NO_PROXY_LIST}' into Dockerfile builder stage..."
+
+    # Cross-platform Dockerfile rewrite via Python (avoids BSD vs GNU sed
+    # incompatibilities for multi-line inserts). Inserts six ENV lines
+    # immediately after `FROM golang...AS builder`. Both UPPERCASE and
+    # lowercase variants are set because Go's net/http honors UPPERCASE
+    # but git/curl and some auxiliary tools look at lowercase first.
+    python3 - "$HTTP_PROXY_URL" "$HTTPS_PROXY_URL" "$NO_PROXY_LIST" <<'PY'
+import re, sys
+http_proxy, https_proxy, no_proxy = sys.argv[1], sys.argv[2], sys.argv[3]
+block = (
+    f"ENV HTTP_PROXY={http_proxy}\n"
+    f"ENV HTTPS_PROXY={https_proxy}\n"
+    f"ENV NO_PROXY={no_proxy}\n"
+    f"ENV http_proxy={http_proxy}\n"
+    f"ENV https_proxy={https_proxy}\n"
+    f"ENV no_proxy={no_proxy}\n"
+)
+with open("Dockerfile") as f:
+    content = f.read()
+# Insert immediately after the line that starts with `FROM golang`
+# (case-insensitive `AS builder`). Anchored to `FROM golang` to avoid
+# touching the final distroless stage.
+new_content, count = re.subn(
+    r"(^FROM golang[^\n]*\n)",
+    r"\1" + block,
+    content,
+    count=1,
+    flags=re.MULTILINE,
+)
+if count != 1:
+    sys.exit("ERROR: did not find 'FROM golang' line in Dockerfile to inject proxy ENV.")
+with open("Dockerfile", "w") as f:
+    f.write(new_content)
+PY
+    echo "Successfully patched Dockerfile builder stage with proxy ENV directives."
 fi
 
 echo ""
