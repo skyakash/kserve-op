@@ -37,7 +37,7 @@ Before running the generation scripts, ensure the following dependencies are ins
 | Go | v1.21+ | `generate-kserve-operator.sh` |
 | Operator SDK | v1.42+ | `generate-kserve-operator.sh` |
 | Docker | v20.10+ | `generate-kserve-operator.sh` |
-| Python 3.7+ + pyyaml 5.1+ | Both | `generate-kserve-raw.sh` + `generate-kserve-operator.sh` (the generator's YAML rewrites pass `sort_keys=False`, added in PyYAML 5.1) |
+| Python (3.7+ recommended) + pyyaml 5.1+ | Both | `generate-kserve-raw.sh` + `generate-kserve-operator.sh` (the generator's YAML rewrites pass `sort_keys=False`, added in PyYAML 5.1). Python 3.6 also works with `pyyaml>=5.1,<5.5` if you're stuck on a legacy distro, but 3.6 is EOL — upgrading recommended. |
 | yq | v4+ | `generate-kserve-operator.sh` (`--olm` flag) |
 | kubectl | v1.24+ | Both scripts |
 | Kustomize | v5.0+ | `generate-kserve-raw.sh` (global); auto-downloaded for operator |
