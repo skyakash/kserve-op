@@ -19,18 +19,18 @@ Verify:
 kubectl get crds | grep cert-manager.io
 ```
 
-### python3 + PyYAML (host prerequisite for `install.sh`)
+### python3 (3.7+) + PyYAML (5.1+) (host prerequisite for `install.sh`)
 
-`install.sh` performs a structured YAML rewrite of namespace references (so any custom `KSERVE_NAMESPACE` is propagated to certificate dnsNames, webhook clientConfig, RoleBinding subjects, and cert-manager `inject-ca-from` annotations). This requires Python 3 with the `PyYAML` module available on the machine running the installer.
+`install.sh` performs a structured YAML rewrite of namespace references (so any custom `KSERVE_NAMESPACE` is propagated to certificate dnsNames, webhook clientConfig, RoleBinding subjects, and cert-manager `inject-ca-from` annotations). This requires **Python 3.7 or later** with **PyYAML 5.1 or later** on the machine running the installer. (PyYAML 5.1 added the `sort_keys` kwarg used by the rewrite; older versions error with `TypeError: safe_dump_all() got an unexpected keyword argument 'sort_keys'` — common on RHEL 7 / CentOS 7's bundled Python 3.6 with PyYAML 3.13.)
 
 ```bash
-# Verify
+# Verify (must print 5.1 or higher)
 python3 -c 'import yaml; print(yaml.__version__)'
 
-# Install if missing (any one of)
-pip3 install --user PyYAML
-python3 -m pip install --user PyYAML
-brew install pyyaml          # macOS Homebrew
+# Install or upgrade (any one of)
+pip3 install --user --upgrade 'PyYAML>=5.1'
+python3 -m pip install --user --upgrade 'PyYAML>=5.1'
+brew install pyyaml          # macOS Homebrew — ships current version
 ```
 
 The installer (`install.sh`) checks for both cert-manager and python3+PyYAML and exits with a clear error if either is missing.
