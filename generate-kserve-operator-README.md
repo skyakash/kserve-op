@@ -9,6 +9,8 @@ Instead of interacting with KServe manually via bash scripts, this tool builds a
 
 Before running the script, ensure you have the following tools installed on your build machine. The script supports both **macOS** and **RHEL/Linux x86_64** build environments.
 
+> **Known-good versions:** the reference build + e2e round used `operator-sdk 1.42.2`, `Go 1.26.3`, `Docker 29.5.2`, `Python 3.13.9 + PyYAML 6.0.3`, `yq v4.53.2`, `Kustomize v5.8.1`, `kubectl v1.34.1`, `skopeo 1.22.2`. See [QUICK_START.md § Validated toolchain versions](QUICK_START.md#validated-toolchain-versions-known-good-for-kserve-v0160) for the criticality breakdown (🔴 must match / 🟡 should match / 🟢 nice to match) and a one-shot diagnostic script you can run if a build fails.
+
 | Tool | Version | Purpose |
 |---|---|---|
 | Source Manifests (`generate-kserve-raw.sh` output) | — | Required input — run this script first |
