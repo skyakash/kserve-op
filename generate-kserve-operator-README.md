@@ -445,11 +445,18 @@ If your cluster needs a Kubernetes secret to pull images from Docker Hub (to avo
 
 The `dockerhub-creds` secret name will be embedded directly into the operator's pod spec and OLM CSV, so no manual patching is required after deployment.
 
-## Building Behind a Corporate Proxy or TLS-Intercepting Firewall (`--cert`)
+## Building Behind a Corporate Proxy or TLS-Intercepting Firewall (`--cert`, `--http-proxy`, `--https-proxy`, `--no-proxy`)
 
-If your build machine sits behind a corporate proxy or firewall that intercepts TLS (presents its own CA certificate instead of upstream's), the Docker build will fail when fetching Go modules, base images, or any other HTTPS dependency — the build container won't trust the proxy's CA. The `--cert <path>` flag handles this.
+If your build machine sits behind a corporate proxy or firewall that intercepts TLS (presents its own CA certificate instead of upstream's), the Docker build will fail when fetching Go modules, base images, or any other HTTPS dependency. There are **two distinct failure modes**, and you typically need both flags to fix them:
 
-### What it does
+| Failure mode | Symptom | Fix |
+|---|---|---|
+| **TLS trust failure** | `x509: certificate signed by unknown authority` (or similar verify error) | `--cert <path>` — injects the corp CA into the builder's trust store |
+| **No route to upstream** | `connection reset by peer`, `i/o timeout`, `dial tcp ... no route` on `go mod download` etc. (build container has no proxy URL configured, so it tries direct egress; firewall resets) | `--http-proxy <url> --https-proxy <url> --no-proxy <list>` — all three together; injects `ENV HTTP_PROXY/HTTPS_PROXY/NO_PROXY` (and lowercase variants) into the builder stage |
+
+Both flags are scoped to the **builder stage only** — neither the CA nor the proxy URL ends up in the final distroless operator image, so customers receive a clean image regardless of your corporate environment.
+
+### `--cert` — TLS trust
 
 When `--cert /path/to/corporate-ca.crt` is passed, the generator modifies the project's Dockerfile to:
 
@@ -458,14 +465,32 @@ When `--cert /path/to/corporate-ca.crt` is passed, the generator modifies the pr
 
 Subsequent build-time fetches (`go mod download`, base-image pulls, etc.) now trust your corporate CA.
 
-### What it does NOT do
+### `--http-proxy` / `--https-proxy` / `--no-proxy` — routing
 
-- The cert is **only added to the builder stage**, not to the final runtime image. The operator binary ships in a `distroless/static:nonroot` final image with no shell and no extra files — exactly as it would without `--cert`. Customers receive a clean image; your corporate CA never leaves your build environment.
-- It does NOT configure runtime proxy settings. If the operator pod itself needs to reach a proxied endpoint at runtime, you'd handle that at the cluster level (pod env vars, `HTTPS_PROXY`, sidecars, etc.) — not via this flag.
+When all three flags are passed together, the generator inserts six `ENV` directives at the top of the builder stage immediately after `FROM golang ... AS builder`:
+
+```dockerfile
+ENV HTTP_PROXY=<your --http-proxy URL>
+ENV HTTPS_PROXY=<your --https-proxy URL>
+ENV NO_PROXY=<your --no-proxy list>
+ENV http_proxy=<your --http-proxy URL>
+ENV https_proxy=<your --https-proxy URL>
+ENV no_proxy=<your --no-proxy list>
+```
+
+Both uppercase and lowercase variants are set because Go's `net/http` honors uppercase but git / curl / some Python tooling looks at lowercase first. Setting both is defensive.
+
+**All three flags are mandatory together** — the script rejects partial use at parse time (e.g., passing only `--http-proxy` errors out with a clear message). Rationale: a silently half-set proxy (e.g., `HTTP_PROXY` set but `HTTPS_PROXY` empty) makes Go fall back to direct egress and produces a `connection reset` six minutes into the build with no obvious cause. Catching the misuse at the CLI is much friendlier.
+
+### What these flags do NOT do
+
+- **Neither flag baked into the final image.** Both the CA and the proxy ENV are scoped to the multi-stage builder; the final `FROM gcr.io/distroless/static:nonroot` stage has no shell, no CA additions, no proxy ENV. Customers receive a clean image; nothing about your build environment leaks.
+- **Neither configures runtime proxy.** If the deployed operator pod itself needs proxied egress at runtime, that's a cluster-level concern (pod env vars, network policy, sidecars) — separate from these build flags.
 
 ### Usage
 
 ```bash
+# Most common case — corporate firewall with both TLS intercept AND proxy:
 ./generate-kserve-operator.sh \
   -t p-kserve-operator \
   -m github.com/your-org/p-kserve-operator \
@@ -473,9 +498,14 @@ Subsequent build-time fetches (`go mod download`, base-image pulls, etc.) now tr
   -s p-kserve-raw \
   -i <registry>/<image>:<tag> \
   --cert /path/to/corporate-ca.crt \
+  --http-proxy http://proxy.example.com:80 \
+  --https-proxy http://proxy.example.com:80 \
+  --no-proxy localhost,127.0.0.1,<your-internal-registry-host> \
   --install-mode SingleNamespace \
   -b -p -o
 ```
+
+> **Tip — include your push registry in `--no-proxy`** so the docker push at the end of the build bypasses the corporate proxy (faster, and most corp proxies block large image uploads anyway).
 
 ### Verification
 
