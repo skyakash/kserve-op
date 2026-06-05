@@ -138,6 +138,8 @@ This script utilizes `operator-sdk` (v1.42.0+) to dynamically scaffold a custom 
   ./generate-kserve-operator.sh [flags...] --multi-platform
   ```
 
+> **Behind a corporate proxy / TLS-intercepting firewall?** Add `--cert <ca.crt>` (TLS trust) AND `--http-proxy <url> --https-proxy <url> --no-proxy <list>` (routing). The latter three are all-or-nothing — partial use is rejected at parse time. Both flags inject into the Dockerfile **builder stage only** — neither the CA nor the proxy URL is baked into the final distroless operator image. See [QUICK_START.md § Building behind a corporate proxy](QUICK_START.md#step-2--generate-operator-build-image-and-create-olm-bundle) and [generate-kserve-operator-README.md § Building Behind a Corporate Proxy](generate-kserve-operator-README.md#building-behind-a-corporate-proxy-or-tls-intercepting-firewall---cert---http-proxy---https-proxy---no-proxy) for the failure-mode table + complete usage example.
+
 ---
 
 ## 🛠️ Typical Workflow Execution
