@@ -20,7 +20,7 @@ Supported build environments: **macOS** and **RHEL/Linux x86_64**.
 | yq v4+ | `brew install yq` | `sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 && sudo chmod +x /usr/local/bin/yq` |
 | kubectl | `brew install kubectl` | [kubernetes.io/docs/tasks/tools](https://kubernetes.io/docs/tasks/tools/) |
 | Kustomize v5+ | `brew install kustomize` | `curl -s .../install_kustomize.sh \| bash` |
-| python3 (3.7+) + pyyaml (5.1+) | `brew install python && pip3 install 'pyyaml>=5.1'` | `dnf install -y python3 python3-pip && pip3 install --upgrade 'pyyaml>=5.1'` |
+| python3 (3.7+ recommended) + pyyaml (5.1+) | `brew install python && pip3 install 'pyyaml>=5.1'` | `dnf install -y python3 python3-pip && pip3 install --upgrade 'pyyaml>=5.1'` |
 
 > See [generate-kserve-operator-README.md](./generate-kserve-operator-README.md#installing-prerequisites) for exact copy-paste install commands per platform.
 
@@ -339,7 +339,7 @@ Use this when you don't need the operator's lifecycle management — `install.sh
 
 Host prerequisites for `install.sh`:
 - `cert-manager` installed in the cluster (see Step 0)
-- `python3` (3.7+) + `PyYAML` (5.1+) on the machine running the script — it does a structured YAML rewrite of namespace references. Verify with `python3 -c 'import yaml; print(yaml.__version__)'` (must print 5.1 or higher). Upgrade with `pip3 install --upgrade 'pyyaml>=5.1'`. Older PyYAML (RHEL 7/CentOS 7's bundled 3.13) errors with `TypeError: safe_dump_all() got an unexpected keyword argument 'sort_keys'`.
+- `python3` (3.7+ recommended) + `PyYAML` (5.1+) on the machine running the script — it does a structured YAML rewrite of namespace references. Verify with `python3 -c 'import yaml; print(yaml.__version__)'` (must print 5.1 or higher). Upgrade with `pip3 install --upgrade 'pyyaml>=5.1'`. Older PyYAML (RHEL 7/CentOS 7's bundled 3.13) errors with `TypeError: safe_dump_all() got an unexpected keyword argument 'sort_keys'`. **Python 3.6 also works** if you're stuck on a legacy distro — the scripts themselves use only basic Python features — but you'll need to cap PyYAML (`pip3 install 'pyyaml>=5.1,<5.5'` — PyYAML 5.5+ dropped 3.6 support). Note that Python 3.6 reached end-of-life in December 2021 and receives no security updates; upgrading to a supported Python is strongly recommended for production use.
 
 ```bash
 # Generate the standalone deployment package (one-time):
