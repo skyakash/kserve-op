@@ -92,7 +92,7 @@ while [[ "$#" -gt 0 ]]; do
             echo "  --docker-password <p>  Registry password/token — generates setup-credentials.sh in the package"
             echo "  --cert <path>        Inject a certificate into the trusted chain (for firewall/proxy)"
             echo "  --http-proxy <url>   HTTP proxy URL for builder stage (corporate firewall)."
-            echo "                       e.g. http://ep.threatpulse.net:80"
+            echo "                       e.g. http://proxy.example.com:80"
             echo "  --https-proxy <url>  HTTPS proxy URL for builder stage."
             echo "                       Typically the SAME URL as --http-proxy."
             echo "  --no-proxy <list>    Comma-separated NO_PROXY bypass list."
@@ -136,8 +136,8 @@ PROXY_FLAGS_SET=0
 if [ "$PROXY_FLAGS_SET" -gt 0 ] && [ "$PROXY_FLAGS_SET" -lt 3 ]; then
     echo "ERROR: --http-proxy, --https-proxy, and --no-proxy must be supplied together (all three) or not at all."
     echo "       Currently set: ${HTTP_PROXY_URL:+--http-proxy} ${HTTPS_PROXY_URL:+--https-proxy} ${NO_PROXY_LIST:+--no-proxy}"
-    echo "       Example: --http-proxy http://ep.threatpulse.net:80 \\"
-    echo "                --https-proxy http://ep.threatpulse.net:80 \\"
+    echo "       Example: --http-proxy http://proxy.example.com:80 \\"
+    echo "                --https-proxy http://proxy.example.com:80 \\"
     echo "                --no-proxy localhost,127.0.0.1,<internal-registry-host>"
     exit 1
 fi

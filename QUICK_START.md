@@ -158,10 +158,10 @@ If you are re-running the build (e.g. after a cluster reset), clean both generat
 > ```bash
 > bash generate-kserve-operator.sh \
 >   ...flags... \
->   --cert threatpulse-ca-chain.crt \
->   --http-proxy http://ep.threatpulse.net:80 \
->   --https-proxy http://ep.threatpulse.net:80 \
->   --no-proxy localhost,127.0.0.1,artifactory.apps.lab1.hcltechlab.com
+>   --cert corp-ca-chain.crt \
+>   --http-proxy http://proxy.example.com:80 \
+>   --https-proxy http://proxy.example.com:80 \
+>   --no-proxy localhost,127.0.0.1,artifactory.example.com
 > ```
 >
 > See [generate-kserve-operator-README.md § Building Behind a Corporate Proxy](generate-kserve-operator-README.md#building-behind-a-corporate-proxy-or-tls-intercepting-firewall-cert) for the full walkthrough + verification recipe.
