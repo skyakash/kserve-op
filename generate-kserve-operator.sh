@@ -142,6 +142,24 @@ if [ "$PROXY_FLAGS_SET" -gt 0 ] && [ "$PROXY_FLAGS_SET" -lt 3 ]; then
     exit 1
 fi
 
+# Derive the OLM bundle image name from the operator image (-i flag).
+# Convention: append `-bundle` to the image NAME (everything before the last
+# `:` tag separator), preserving the tag. Examples:
+#   registry/path/image:v1 → registry/path/image-bundle:v1   ← new (this commit)
+#   localhost:5000/img:v1  → localhost:5000/img-bundle:v1    (handles port colon)
+#   image (no tag)         → image-bundle
+# Idiomatic OLM convention (compare quay.io/operatorhubio/<x>-bundle:v1).
+# Previously the script appended `-bundle` to the tag — e.g. `:v1-bundle` —
+# which conflated tag and image-name semantics and made it impossible to
+# host the bundle in a separate Artifactory repo with its own auth.
+if [ -n "${IMAGE_TAG}" ]; then
+    if [[ "${IMAGE_TAG}" == *:* ]]; then
+        BUNDLE_IMG="${IMAGE_TAG%:*}-bundle:${IMAGE_TAG##*:}"
+    else
+        BUNDLE_IMG="${BUNDLE_IMG}"
+    fi
+fi
+
 # Check if we only need to clean
 if [ "$CLEAN_ONLY" = true ]; then
     if [ -z "$TARGET_DIR_NAME" ]; then
@@ -685,8 +703,10 @@ if [ "$GEN_OLM_BUNDLE" = true ]; then
         echo "WARNING: Could not find base ClusterServiceVersion YAML to patch installModes."
     fi
 
-    BUNDLE_IMG="${IMAGE_TAG}-bundle"
-    
+    # BUNDLE_IMG was derived globally near the top of the script (search for
+    # "Derive the OLM bundle image name"). Pattern: image-name has -bundle
+    # appended; tag preserved as-is.
+
     if [[ "$BUILD_CHOICE" =~ ^[Yy]$ ]]; then
         if [ "$MULTI_PLATFORM" = true ]; then
             echo "Running multi-platform bundle build for ${BUNDLE_IMG}..."
@@ -758,7 +778,9 @@ bin/kustomize build config/default > "${PACKAGE_DIR}/operator-deployment.yaml"
 if [ -n "${CUSTOMER_REGISTRY}" ]; then
     IMAGE_SHORTNAME="${IMAGE_TAG##*/}"          # e.g. kserve-raw-operator:v1
     CUSTOMER_IMAGE="${CUSTOMER_REGISTRY}/${IMAGE_SHORTNAME}"
-    BUNDLE_SHORTNAME="${IMAGE_TAG##*/}-bundle"  # e.g. kserve-raw-operator:v1-bundle
+    # New (matches BUNDLE_IMG global): `-bundle` appended to image NAME
+    # before the tag — e.g. kserve-raw-operator-bundle:v1
+    BUNDLE_SHORTNAME="${BUNDLE_IMG##*/}"
     CUSTOMER_BUNDLE="${CUSTOMER_REGISTRY}/${BUNDLE_SHORTNAME}"
 
     echo "Rewriting image references for customer registry: ${CUSTOMER_REGISTRY}"
@@ -871,14 +893,14 @@ MIRROR_EOF
         sed -i '' \
             -e "s|__SRC_OPERATOR__|${IMAGE_TAG}|g" \
             -e "s|__DST_OPERATOR__|${CUSTOMER_IMAGE}|g" \
-            -e "s|__SRC_BUNDLE__|${IMAGE_TAG}-bundle|g" \
+            -e "s|__SRC_BUNDLE__|${BUNDLE_IMG}|g" \
             -e "s|__DST_BUNDLE__|${CUSTOMER_BUNDLE}|g" \
             "${PACKAGE_DIR}/mirror-images.sh"
     else
         sed -i \
             -e "s|__SRC_OPERATOR__|${IMAGE_TAG}|g" \
             -e "s|__DST_OPERATOR__|${CUSTOMER_IMAGE}|g" \
-            -e "s|__SRC_BUNDLE__|${IMAGE_TAG}-bundle|g" \
+            -e "s|__SRC_BUNDLE__|${BUNDLE_IMG}|g" \
             -e "s|__DST_BUNDLE__|${CUSTOMER_BUNDLE}|g" \
             "${PACKAGE_DIR}/mirror-images.sh"
     fi
@@ -1615,9 +1637,9 @@ echo "Generated enable-ingress.sh — customer runs this to enable external-URL 
 
 if [ "$GEN_OLM_BUNDLE" = true ]; then
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        sed -i '' "s|<your-bundle-image-tag>|${IMAGE_TAG}-bundle|g" "${PACKAGE_DIR}/README.md"
+        sed -i '' "s|<your-bundle-image-tag>|${BUNDLE_IMG}|g" "${PACKAGE_DIR}/README.md"
     else
-        sed -i "s|<your-bundle-image-tag>|${IMAGE_TAG}-bundle|g" "${PACKAGE_DIR}/README.md"
+        sed -i "s|<your-bundle-image-tag>|${BUNDLE_IMG}|g" "${PACKAGE_DIR}/README.md"
     fi
 fi
 
@@ -1650,7 +1672,7 @@ if [ "$GEN_OLM_BUNDLE" = true ]; then
         echo "    --pull-secret-name dockerhub-creds"
     else
         echo "To deploy via OLM, execute the following command:"
-        echo "  operator-sdk run bundle ${IMAGE_TAG}-bundle \\"
+        echo "  operator-sdk run bundle ${BUNDLE_IMG} \\"
         echo "    --namespace kserve-operator-system \\"
         echo "    --install-mode SingleNamespace=kserve"
     fi

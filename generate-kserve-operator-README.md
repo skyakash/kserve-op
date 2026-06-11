@@ -267,7 +267,7 @@ kubectl create secret docker-registry dockerhub-creds \
 
 # 4. Deploy the bundle. --install-mode auto-creates an OperatorGroup
 #    targeting ${KSERVE_NS}; no manual OperatorGroup yaml needed.
-operator-sdk run bundle <your-bundle-image>:<tag>-bundle \
+operator-sdk run bundle <your-bundle-image-base>-bundle:<tag> \
   --namespace kserve-operator-system \
   --install-mode "SingleNamespace=${KSERVE_NS}"
 # (add `--pull-secret-name dockerhub-creds` if step 3 was needed)

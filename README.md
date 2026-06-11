@@ -173,7 +173,7 @@ This script utilizes `operator-sdk` (v1.42.0+) to dynamically scaffold a custom 
    # Option A: OLM bundle (recommended — requires OLM pre-installed)
    #          --install-mode auto-creates the OperatorGroup with the right targetNamespaces.
    operator-sdk olm install
-   operator-sdk run bundle docker.io/your-org/kserve-raw-operator:v1-bundle \
+   operator-sdk run bundle docker.io/your-org/kserve-raw-operator-bundle:v1 \
      --namespace kserve-operator-system \
      --install-mode SingleNamespace=kserve
    # (add `--pull-secret-name <secret>` if your image is private)
