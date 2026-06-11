@@ -220,12 +220,26 @@ container_build_multiarch() {
 }
 
 # Single-arch flat-manifest build + push (OLM bundle needs a flat manifest,
-# not a manifest list). Docker: buildx with attestations suppressed. Podman:
-# a plain build already produces a flat manifest.
+# not a manifest list). Docker: buildx with attestations suppressed, loaded
+# into the local daemon, then pushed via plain `docker push`. Podman: a
+# plain build already produces a flat manifest, then pushed.
+#
+# Why two-step (--load + docker push) on docker instead of buildx --push?
+# BuildKit's --push uses its own HTTP client for the registry handshake
+# and does NOT reliably honor the host's NO_PROXY env var. Customers
+# behind corporate firewalls have seen `--push` route the auth-token
+# request through the corp proxy (returning a 503 HTML page) even when
+# the registry host is in NO_PROXY. The docker daemon's HTTP client
+# DOES honor /etc/systemd/system/docker.service.d/http-proxy.conf and
+# ~/.docker/config.json proxies block, so `docker push` reliably routes
+# to internal registries direct. The --load step is safe because we
+# build for the host arch only (BUNDLE_PLATFORM = uname -m).
 container_build_singlearch_flat() {
     local tag="$1" dockerfile="$2" platform="$3"
     if [ "${CONTAINER_TOOL}" = "docker" ]; then
-        docker buildx build --platform "${platform}" --provenance=false --sbom=false --push -f "${dockerfile}" -t "${tag}" .
+        docker buildx build --platform "${platform}" --provenance=false --sbom=false --load \
+            -f "${dockerfile}" -t "${tag}" . || return 1
+        docker push "${tag}"
     else
         podman build --platform "${platform}" -f "${dockerfile}" -t "${tag}" . && podman push "${tag}" "docker://${tag}"
     fi
