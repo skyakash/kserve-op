@@ -75,6 +75,27 @@ Items #4 and #5 are stretch goals — wait until you've shipped the first three.
 
 ## Recently fixed (post-0.16 validation)
 
+### OLM bundle image naming: `-bundle` in image name, not in tag — FIXED
+**Symptom (customer feedback, 2026-06-XX):** Customers wanting to host the OLM bundle image in a separate Artifactory repo (with its own auth scope, retention policy, etc.) couldn't, because the generator named the bundle as `<image>:<tag>-bundle` — sharing the image name with the operator and only differing by tag. Both pushed to the same repo.
+
+**Root cause:** Bundle image name was derived as `${IMAGE_TAG}-bundle` (suffix appended to the tag). This conflated tag and image-name semantics. Upstream OperatorHub convention is `<x>-bundle:<tag>` (suffix on the image NAME, before the colon).
+
+**Fix:** Generator now derives the bundle name by splitting the operator image at its last `:` (tag separator) and inserting `-bundle` between the name and the tag. So `registry/path/img:v1` becomes `registry/path/img-bundle:v1`. Bash parameter expansion handles the `localhost:5000/img:v1` port-colon edge case correctly. Verified by **T29** (3 sub-cases: normal, port colon, no tag). Five inline `${IMAGE_TAG}-bundle` occurrences across the script (mirror-images.sh templating, package README rewrite, success message) replaced with `${BUNDLE_IMG}` references. Docs (QUICK_START, README, generate-kserve-operator-README) updated. **Breaking change** for existing deploy scripts referencing `:v27-bundle` — they need to update to `-bundle:v27`.
+
+### `-p` flag inconsistency between operator and bundle images — FIXED
+**Symptom (colleague observation, 2026-06-XX):** "`-p` had no value as images were getting pushed by default." Accurate for the bundle — but the operator image still needed `-p`. The asymmetric behavior was confusing: `-b -o` (no `-p`) silently pushed the bundle while keeping the operator local-only, producing a deployed bundle whose CSV referenced an `ImagePullBackOff`-state operator image.
+
+**Root cause:** The bundle build wrapper (`container_build_singlearch_flat`) was hardcoded to push via `buildx --push`, regardless of `${AUTO_PUSH}`. The operator image's push, by contrast, was gated by `make docker-push` only running when `-p` was set.
+
+**Fix:** Bundle wrapper now checks `${AUTO_PUSH}`. With `-b` alone, neither image is pushed (consistent local-only state). With `-b -p`, both are pushed (consistent registry-ready state). New status message clarifies the state: "OLM Bundle image '...' built locally. Pass -p to also push to the registry. (Without -p, neither the operator image nor the bundle is pushed — they're local-only.)" Multi-arch builds via `-x` still unconditionally push because manifest lists can only be assembled in the registry — this is a BuildKit constraint, not a script choice. Verified by **T30** (4 static assertions on the wrapper's invariants).
+
+### `generate-kserve-operator.sh` bundle push 503 behind corporate firewall — FIXED
+**Symptom (customer build, 2026-06-XX):** After operator-image push succeeded, OLM bundle push failed with `503 Service Unavailable` and an HTML "Network Error" page from the corporate proxy (Threatpulse). A subsequent manual `docker push <bundle-image>` from the same shell succeeded.
+
+**Root cause:** The bundle wrapper used `docker buildx build --push`, which routes the registry handshake through BuildKit's own HTTP client. BuildKit's client does NOT reliably honor the host's `NO_PROXY` env var — even though the internal registry was in `--no-proxy`, BuildKit still tunneled the auth-token request through the corporate proxy, which intercepted and returned 503. The operator image's push (via `make docker-push` → `docker push`) goes through the docker daemon's HTTP client, which DOES honor `/etc/systemd/system/docker.service.d/http-proxy.conf` and `~/.docker/config.json` proxies block, so it routed direct to the internal registry as expected.
+
+**Fix:** Bundle wrapper's docker path changed from `buildx --push` to two-step `buildx --load` (materializes the bundle into the local daemon) + `docker push` (uses daemon's HTTP client). Now symmetric with the podman path. Single-arch is the common case; multi-arch (`-x` flag) bundle builds still use `buildx --push` because manifest lists can only be assembled in the registry. Multi-arch behind a TLS-intercepting firewall remains a known limitation — fix there is more invasive (`docker buildx create --driver-opt env.NO_PROXY=...` at builder-create time); deferred until a customer hits it. Verified by **T30** assertion (3): wrapper uses `docker push`.
+
 ### `generate-kserve-operator.sh` proxy support for corporate firewalls — FIXED
 **Symptom (customer build, 2026-06-XX):** Build succeeded past `--cert` injection (TLS trust restored) but failed at `[builder 7/11] RUN go mod download` with `read tcp ... : read: connection reset by peer` from `proxy.golang.org`. Customer was behind a corporate firewall doing TLS intercept; the firewall expected traffic via its egress proxy but the build container had no `HTTP_PROXY`/`HTTPS_PROXY` env vars set, so Go module fetches tried direct egress and the firewall reset the TCP.
 

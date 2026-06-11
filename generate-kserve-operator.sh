@@ -1637,9 +1637,9 @@ echo "Generated enable-ingress.sh — customer runs this to enable external-URL 
 
 if [ "$GEN_OLM_BUNDLE" = true ]; then
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        sed -i '' "s|<your-bundle-image-tag>|${BUNDLE_IMG}|g" "${PACKAGE_DIR}/README.md"
+        sed -i '' "s|<your-bundle-image>|${BUNDLE_IMG}|g" "${PACKAGE_DIR}/README.md"
     else
-        sed -i "s|<your-bundle-image-tag>|${BUNDLE_IMG}|g" "${PACKAGE_DIR}/README.md"
+        sed -i "s|<your-bundle-image>|${BUNDLE_IMG}|g" "${PACKAGE_DIR}/README.md"
     fi
 fi
 
