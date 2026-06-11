@@ -386,10 +386,11 @@ flowchart TD
 
 ```bash
 # Set BUNDLE_IMAGE to where your bundle actually lives:
-#   • Standard build:           <build-registry>/<image>:<tag>-bundle
-#   • --customer-registry path: <customer-registry>/<image>:<tag>-bundle
+#   • Standard build:           <build-registry>/<image>-bundle:<tag>
+#   • --customer-registry path: <customer-registry>/<image>-bundle:<tag>
 #     (after `bash mirror-images.sh ...` has copied/loaded it there).
-# In all cases the suffix is `-bundle` (the operator image's tag + `-bundle`).
+# Convention: `-bundle` is appended to the IMAGE NAME (before the tag),
+# matching the upstream OperatorHub pattern (e.g. quay.io/operatorhubio/<x>-bundle:v1).
 BUNDLE_IMAGE=<your-bundle-image>
 
 # Single-command deploy. --install-mode auto-creates an OperatorGroup in
@@ -405,8 +406,8 @@ operator-sdk run bundle "${BUNDLE_IMAGE}" \
 
 > **Why no OperatorGroup yaml?** OLM forbids embedding OperatorGroups in bundles (they're user-controlled installation parameters, not operator artifacts). `operator-sdk run bundle --install-mode` generates one on the fly named `operator-sdk-og` in the operator's namespace.
 
-> **Bundle image tag:** The bundle image tag is printed at the end of `generate-kserve-operator.sh` output, in the format `<image-tag>-bundle`.
-> Example: if you built with `-i docker.io/akashneha/kserve-raw-operator:v403`, the bundle image is `docker.io/akashneha/kserve-raw-operator:v403-bundle`.
+> **Bundle image name:** The bundle image name is derived by appending `-bundle` to the operator image name (before the `:tag`), printed at the end of `generate-kserve-operator.sh` output. Format: `<registry>/<image>-bundle:<tag>`.
+> Example: if you built with `-i docker.io/akashneha/kserve-raw-operator:v403`, the bundle image is `docker.io/akashneha/kserve-raw-operator-bundle:v403`.
 
 > **Customer registry flow:** If you generated with `--customer-registry`, the package contains `mirror-images.sh` and `deploy-bundle.sh`. Run `mirror-images.sh` first to push images to the customer registry, then `deploy-bundle.sh` — it handles the bundle image reference automatically.
 
