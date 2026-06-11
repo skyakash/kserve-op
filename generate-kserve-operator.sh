@@ -219,29 +219,40 @@ container_build_multiarch() {
     fi
 }
 
-# Single-arch flat-manifest build + push (OLM bundle needs a flat manifest,
-# not a manifest list). Docker: buildx with attestations suppressed, loaded
-# into the local daemon, then pushed via plain `docker push`. Podman: a
-# plain build already produces a flat manifest, then pushed.
+# Single-arch flat-manifest build (and optionally push). OLM bundle needs
+# a flat manifest, not a manifest list.
 #
-# Why two-step (--load + docker push) on docker instead of buildx --push?
-# BuildKit's --push uses its own HTTP client for the registry handshake
-# and does NOT reliably honor the host's NO_PROXY env var. Customers
-# behind corporate firewalls have seen `--push` route the auth-token
-# request through the corp proxy (returning a 503 HTML page) even when
-# the registry host is in NO_PROXY. The docker daemon's HTTP client
-# DOES honor /etc/systemd/system/docker.service.d/http-proxy.conf and
-# ~/.docker/config.json proxies block, so `docker push` reliably routes
-# to internal registries direct. The --load step is safe because we
-# build for the host arch only (BUNDLE_PLATFORM = uname -m).
+# Push semantics: this wrapper respects the global ${AUTO_PUSH} so the
+# bundle's push behavior matches the operator image's push behavior — i.e.
+# `-b` alone builds locally (no push for either image), `-b -p` builds AND
+# pushes both. The previous behavior (bundle always pushed via buildx
+# --push regardless of -p) was inconsistent and produced confusing
+# half-states where the bundle CSV referenced an operator image that was
+# only in the local daemon.
+#
+# Docker path: buildx with attestations suppressed, loaded into the local
+# daemon, then optionally pushed via plain `docker push`. Two-step instead
+# of `buildx --push` because BuildKit's push uses its own HTTP client that
+# does NOT reliably honor the host's NO_PROXY env var — customers behind
+# corporate firewalls have seen `--push` route auth-token requests through
+# the corp proxy (503 HTML page) even when the registry was in NO_PROXY.
+# The docker daemon honors /etc/systemd/system/docker.service.d/http-proxy.conf
+# and ~/.docker/config.json's proxies block, so `docker push` reliably
+# routes to internal registries direct. The --load step is safe because
+# we build for the host arch only (BUNDLE_PLATFORM = uname -m).
 container_build_singlearch_flat() {
     local tag="$1" dockerfile="$2" platform="$3"
     if [ "${CONTAINER_TOOL}" = "docker" ]; then
         docker buildx build --platform "${platform}" --provenance=false --sbom=false --load \
             -f "${dockerfile}" -t "${tag}" . || return 1
-        docker push "${tag}"
+        if [ "${AUTO_PUSH}" = "true" ]; then
+            docker push "${tag}" || return 1
+        fi
     else
-        podman build --platform "${platform}" -f "${dockerfile}" -t "${tag}" . && podman push "${tag}" "docker://${tag}"
+        podman build --platform "${platform}" -f "${dockerfile}" -t "${tag}" . || return 1
+        if [ "${AUTO_PUSH}" = "true" ]; then
+            podman push "${tag}" "docker://${tag}" || return 1
+        fi
     fi
 }
 
@@ -706,7 +717,12 @@ if [ "$GEN_OLM_BUNDLE" = true ]; then
                 echo "ERROR: OLM Bundle build failed."
                 exit 1
             fi
-            echo "The OLM Bundle image '${BUNDLE_IMG}' has been successfully built and pushed!"
+            if [ "${AUTO_PUSH}" = "true" ]; then
+                echo "The OLM Bundle image '${BUNDLE_IMG}' has been successfully built and pushed!"
+            else
+                echo "The OLM Bundle image '${BUNDLE_IMG}' built locally. Pass -p to also push to the registry."
+                echo "  (Without -p, neither the operator image nor the bundle is pushed — they're local-only.)"
+            fi
         fi
     else
         echo "Skipping OLM Bundle image build."
