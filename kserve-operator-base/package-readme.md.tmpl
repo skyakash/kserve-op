@@ -134,7 +134,7 @@ If you have Operator Lifecycle Manager installed, you can deploy the operator as
 # SingleNamespace=my-kserve, and the operator's apply-time rewrite installs
 # KServe there). Pre-create both namespaces (kserve-operator-system + the
 # KServe target ns) before running.
-operator-sdk run bundle <your-bundle-image-tag> \
+operator-sdk run bundle <your-bundle-image> \
   --namespace kserve-operator-system \
   --install-mode SingleNamespace=kserve \
   --pull-secret-name docker-pull-secret   # omit if image is public
