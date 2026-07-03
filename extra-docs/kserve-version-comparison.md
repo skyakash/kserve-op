@@ -168,3 +168,89 @@ Three viable paths:
 ## Recommendation
 
 Stay on `master` for now. If there is a business reason to use 0.16 (e.g., support contract, customer requirement), implement Option 1 above: modify Stage 1 to strip the extra subsystems from the default overlay. Re-run the same E2E test we just completed twice and confirm output parity with master.
+
+---
+
+## Downstream chart compatibility: v0.15 → v0.16 breaking change for user InferenceServices
+
+**Added 2026-07-03** after a colleague reported an admission-webhook rejection while migrating a Helm chart (`nwdaf-model-0.2.1`) from a v0.15.x cluster to our v0.16 build. Same repro symptom pattern shows up regardless of infrastructure — this is pure upstream KServe behavior, not a project bug.
+
+### Symptom
+
+```
+* admission webhook "inferenceservice.kserve-webhook-server.validator" denied the request:
+    [cpu] is not a supported metric
+```
+
+After removing `scaleMetric: cpu` from the chart, the error mutates to `[memory] is not a supported metric` — the same block emits both.
+
+### Root cause
+
+Upstream KServe v0.15 → v0.16 renamed the deployment-mode string. From `kserve-source.v0.16/pkg/constants/constants.go:215`:
+
+```go
+LegacyRawDeployment DeploymentModeType = "RawDeployment"  // deprecated: use Standard
+Standard            DeploymentModeType = "Standard"       // NEW canonical value
+```
+
+The admission validator's dispatcher in `kserve-source.v0.16/pkg/apis/serving/v1beta1/inference_service_validation.go:258` only matches the **new canonical string**:
+
+```go
+switch deploymentMode {
+case string(constants.Standard):        // ← matches literal "Standard" ONLY
+    switch autoscalerClass {
+    case "hpa":  → HPA validator (cpu, memory both allowed)
+    case "keda": → KEDA validator
+    }
+default:                                 // ← "RawDeployment", empty, anything else lands here
+    if annotationClass == "hpa.autoscaling.knative.dev" {
+        → HPA validator
+    }
+    → KPA validator (only concurrency, rps allowed)
+}
+```
+
+The same `ComponentExtensionSpec` (which carries `scaleMetric` / `scaleTarget`) is embedded inline in **predictor, transformer, and explainer** specs (`predictor.go:73`, `transformer.go:28`, `explainer.go:37`). The validator iterates all three at `:138-140`. Any single component with `scaleMetric: cpu|memory` while dispatch annotations are missing triggers the error — which is why removing the field from just one block doesn't help.
+
+### Who this hits
+
+Charts written against KServe **v0.15.x** that hardcode `serving.kserve.io/deploymentMode: "RawDeployment"` together with `scaleMetric: cpu` or `scaleMetric: memory`. On v0.15 the string `"RawDeployment"` matched the HPA-routing case; on v0.16 it doesn't, so cpu/memory metrics get rejected.
+
+The KServe sample charts (sklearn-iris, etc.) don't set `scaleMetric` at all — they use the default (`concurrency`), which is legal in the KPA branch. That's why the sample deploys clean while the user's chart trips.
+
+### Two fix paths (chart-side)
+
+**Fastest unblock** — strip the fields, let KServe use default concurrency-based scaling:
+
+Delete every `scaleMetric:` and `scaleTarget:` line from the chart's `templates/inferenceservice.yaml` — **from both predictor AND transformer blocks** (and explainer if present). Repackage and reinstall.
+
+**Proper fix** — modernize the annotations so cpu/memory-based scaling still works:
+
+Edit the chart's `templates/inferenceservice.yaml` `metadata.annotations` block:
+
+```yaml
+metadata:
+  annotations:
+    serving.kserve.io/deploymentMode: "Standard"      # was "RawDeployment" — must be literal "Standard"
+    serving.kserve.io/autoscalerClass: "hpa"          # required to dispatch to HPA validator
+```
+
+Both annotations must be present, and they must be on `metadata.annotations` — not `spec.predictor.annotations` (pod-template annotations are not read by the validator).
+
+### Debug recipe for a stuck user
+
+```bash
+# Render the chart locally
+helm template <release> <chart.tgz> -f values.yaml > /tmp/rendered.yaml
+
+# Find every occurrence of cpu / memory / scaleMetric / autoscaler in the rendered manifest
+grep -niE 'cpu|memory|scaleMetric|scaleTarget|autoscaling|autoscaler|deploymentMode' /tmp/rendered.yaml
+```
+
+The output reveals exactly which template line is emitting the offending metric — usually either a hardcoded `scaleMetric: cpu` or a Helm `default "cpu"` fallback the user wasn't aware of.
+
+### Effect on our own project
+
+Our `generate-kserve-raw.sh` still emits `defaultDeploymentMode: RawDeployment` in the ConfigMap. This is **safe** for two reasons: (1) the runtime controller still honors the legacy alias, and (2) our shipped sample (`sklearn-iris.yaml`) does not set `scaleMetric`, so the strict-string dispatcher never fires. But downstream users migrating v0.15-era charts will hit this — hence this section.
+
+No project code change required.
