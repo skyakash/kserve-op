@@ -633,3 +633,73 @@ kubectl run --rm -i curl-test-offline --image=curlimages/curl --restart=Never --
   http://sklearn-iris-pvc-predictor.default.svc.cluster.local/v1/models/sklearn-iris-pvc:predict
 ```
 ✅ Expected: `{"predictions":[1]}`
+
+---
+
+## Part D: Troubleshooting
+
+### `[cpu]` or `[memory]` is not a supported metric
+
+**Symptom.** InferenceService creation is rejected by the admission webhook:
+```
+admission webhook "inferenceservice.kserve-webhook-server.validator" denied the request:
+    [cpu] is not a supported metric
+```
+Removing `scaleMetric: cpu` from your Helm values often just shifts the error to `[memory]` — same underlying issue.
+
+**Who hits this.** Users whose InferenceService (or Helm chart) was written against KServe **v0.15.x** and hardcodes:
+- `serving.kserve.io/deploymentMode: "RawDeployment"` (the legacy string), AND
+- `scaleMetric: cpu` or `scaleMetric: memory` on any of predictor, transformer, or explainer.
+
+**Root cause.** Upstream KServe renamed the deployment-mode string in v0.16: `"RawDeployment"` → `"Standard"`. The admission validator only routes to the CPU/memory-allowing (HPA) branch when the annotation value matches the literal new string `"Standard"` AND the `autoscalerClass` annotation is `"hpa"`. Anything else — including the legacy `"RawDeployment"` string — falls back to the concurrency-based (KPA) validator, which rejects both `cpu` and `memory`. The `scaleMetric` field lives on all three component specs (predictor, transformer, explainer), so removing it from one block just uncovers the next.
+
+Confirmed in source:
+- `kserve-source.v0.16/pkg/constants/constants.go:215` — `LegacyRawDeployment DeploymentModeType = "RawDeployment" // deprecated: use Standard`
+- `kserve-source.v0.16/pkg/apis/serving/v1beta1/inference_service_validation.go:258` — validator dispatcher switch
+
+**Fix A — fastest unblock (strip the fields).** In your chart's `templates/inferenceservice.yaml`, delete every `scaleMetric:` and `scaleTarget:` line from every component block. KServe falls back to `concurrency`-based scaling, which is universally accepted.
+
+```yaml
+spec:
+  predictor:
+    # scaleMetric: cpu          ← delete
+    # scaleTarget: 80           ← delete
+    ...
+  transformer:
+    # scaleMetric: memory       ← delete
+    # scaleTarget: 60           ← delete
+    ...
+```
+
+Repackage the chart (`tar -czf`) and reinstall.
+
+**Fix B — modernize the annotations (keeps CPU/memory-based autoscaling).** Edit the same template file, adding two annotations to `metadata.annotations`:
+
+```yaml
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: {{ .Release.Name }}
+  annotations:
+    serving.kserve.io/deploymentMode: "Standard"      # replaces legacy "RawDeployment"
+    serving.kserve.io/autoscalerClass: "hpa"          # required to dispatch to HPA validator
+spec:
+  predictor:
+    scaleMetric: cpu             # now valid
+    scaleTarget: 80
+    ...
+```
+
+Both annotations must be on `metadata.annotations` — not `spec.predictor.annotations` (pod-template annotations aren't read by the validator).
+
+**Debug recipe** — find every place your chart is still emitting `cpu` / `memory`:
+
+```bash
+helm template <release> <chart.tgz> -f values.yaml > /tmp/rendered.yaml
+
+grep -niE 'cpu|memory|scaleMetric|scaleTarget|autoscaling|autoscaler|deploymentMode' /tmp/rendered.yaml
+```
+
+If `cpu` or `memory` shows up in the output, that's your source — usually either a hardcoded `scaleMetric: cpu` in the template, or a Helm `default "cpu"` fallback in an expression like `{{ .Values.scaleMetric | default "cpu" }}`.
+
+See `extra-docs/kserve-version-comparison.md` § "Downstream chart compatibility: v0.15 → v0.16 breaking change" for the full source-code trace.
