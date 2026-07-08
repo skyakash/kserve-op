@@ -1,8 +1,10 @@
 # KServe Operator — Quick Start Guide
 
-Two paths depending on what you're doing:
+Four sections — pick what you need:
 - **[Part A](#part-a-builder-build--publish-the-operator)** — you're building/publishing the operator
 - **[Part B](#part-b-deployer-install-kserve-on-a-cluster)** — you have the package and just want to install KServe
+- **[Part C](#part-c-alternative--offline--air-gapped-model-test)** — offline / air-gapped model test using a PVC
+- **[Part D](#part-d-troubleshooting)** — troubleshooting recipes (`[cpu]`/`[memory] is not a supported metric` and other common admission-webhook rejections)
 
 ---
 
