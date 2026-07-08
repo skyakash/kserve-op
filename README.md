@@ -12,7 +12,7 @@ It is composed of two primary bash automation pipelines that rely on modular tem
 
 | Doc | What it's for |
 |---|---|
-| [QUICK_START.md](QUICK_START.md) | Copy-paste install guide — both the **builder** workflow (Part A: extract → generate → push) and the **deployer** workflow (Part B: cert-manager → OLM → run bundle → iris smoke test). The fastest path to a working install. |
+| [QUICK_START.md](QUICK_START.md) | Copy-paste install guide — the **builder** workflow (Part A: extract → generate → push), the **deployer** workflow (Part B: cert-manager → OLM → run bundle → iris smoke test), an **offline / air-gapped** flow using a PVC (Part C), and **troubleshooting** recipes for common admission-webhook rejections (Part D). The fastest path to a working install. |
 | [generate-kserve-raw-README.md](generate-kserve-raw-README.md) | Full CLI reference for the raw-extraction script. |
 | [generate-kserve-operator-README.md](generate-kserve-operator-README.md) | Full CLI reference for the operator generator (all flags, install modes, customer-registry workflow). |
 
