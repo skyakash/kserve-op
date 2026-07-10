@@ -1512,7 +1512,7 @@ chmod +x "${PACKAGE_DIR}/install-operator-deployment.sh"
 echo "Generated install-operator-deployment.sh — Option B deploy-time namespace rewrite wrapper."
 
 # Generate enable-ingress.sh — wraps the ConfigMap patch + controller restart
-# needed to flip KServe from RawDeployment-no-Ingress mode (default) to
+# needed to flip KServe from Standard-no-Ingress mode (default) to
 # create-Ingress-via-<class> mode. Always generated; only relevant if the
 # user wants external URLs via an ingress controller (nginx, haproxy, etc.).
 cat > "${PACKAGE_DIR}/enable-ingress.sh" <<'INGRESS_EOF'

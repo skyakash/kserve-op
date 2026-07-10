@@ -241,7 +241,8 @@ fi
 # Post-processing on the kustomize output:
 #   1. Drop llmisvc + localmodel resources entirely (their controllers are
 #      removed from project scope).
-#   2. inferenceservice-config ConfigMap: force RawDeployment, disable Istio/Ingress.
+#   2. inferenceservice-config ConfigMap: force Standard mode (canonical v0.16+
+#      name; controller still honors the legacy "RawDeployment" alias), disable Istio/Ingress.
 #   3. Pin the kserve-controller image to v0.16.0. KServe 0.16 ships :latest,
 #      which drifts; pinning gives reproducibility.
 python3 -c '
@@ -342,7 +343,7 @@ for doc in docs:
     if kind == "ConfigMap" and name == "inferenceservice-config":
         if "deploy" in doc.get("data", {}):
             deploy_cfg = json.loads(doc["data"]["deploy"])
-            deploy_cfg["defaultDeploymentMode"] = "RawDeployment"
+            deploy_cfg["defaultDeploymentMode"] = "Standard"
             doc["data"]["deploy"] = json.dumps(deploy_cfg, indent=4)
         if "ingress" in doc.get("data", {}):
             ingress_cfg = json.loads(doc["data"]["ingress"])
