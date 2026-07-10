@@ -251,6 +251,10 @@ The output reveals exactly which template line is emitting the offending metric 
 
 ### Effect on our own project
 
-Our `generate-kserve-raw.sh` still emits `defaultDeploymentMode: RawDeployment` in the ConfigMap. This is **safe** for two reasons: (1) the runtime controller still honors the legacy alias, and (2) our shipped sample (`sklearn-iris.yaml`) does not set `scaleMetric`, so the strict-string dispatcher never fires. But downstream users migrating v0.15-era charts will hit this — hence this section.
+Our `generate-kserve-raw.sh` now emits `defaultDeploymentMode: Standard` in the ConfigMap — the v0.16+ canonical value aligned with the upstream rename this section describes. Prior builds emitted `RawDeployment`, which the runtime controller still honors as a legacy alias for backwards-compat with existing user ISVCs. The alignment happened 2026-07-08 after a colleague migrating a v0.15-era Helm chart hit the `[cpu] is not a supported metric` webhook rejection above and confirmed the "Standard" fix worked in production.
 
-No project code change required.
+Coverage locked in:
+- **T31** (cluster-based regression guard): deploys the exact negative case from the migration recipe above (`scaleMetric: cpu`, no dispatch annotations → webhook rejection expected) plus the exact positive case (`Standard` + `hpa` annotations → deploy succeeds). If upstream ever loosens the validator, this test fails and this section stops rotting.
+- **T32** (no-cluster static guard): greps `p-kserve-raw/04-kserve-core/kserve-core.yaml` and `p-kserve-raw/06-sample-model/sklearn-iris.yaml` to confirm both say `"Standard"` and neither says `"RawDeployment"`.
+
+**Downstream user impact of our flip:** none. The controller honors both strings. Users whose charts hardcode `serving.kserve.io/deploymentMode: "RawDeployment"` continue to work. Users whose charts hardcode `scaleMetric: cpu | memory` still need the two-annotation fix documented above.

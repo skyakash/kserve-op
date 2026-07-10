@@ -75,6 +75,13 @@ Items #4 and #5 are stretch goals — wait until you've shipped the first three.
 
 ## Recently fixed (post-0.16 validation)
 
+### ConfigMap `defaultDeploymentMode` flipped from `RawDeployment` (legacy) to `Standard` (v0.16+ canonical) — ALIGNED
+**Trigger (2026-07-08):** A colleague migrating a v0.15-era Helm chart hit the KServe admission webhook `[cpu] is not a supported metric` rejection. Root cause traced to upstream KServe v0.15→v0.16 renaming the deployment-mode string: `"RawDeployment"` is now the deprecated legacy alias, `"Standard"` is canonical. Our project's generator was still baking the legacy string into the `inferenceservice-config` ConfigMap default while our own QUICK_START Part D + `kserve-version-comparison.md` documentation told users to use `"Standard"`. Three-way disagreement between shipped ConfigMap, shipped README, and QUICK_START guidance. Not a runtime bug (controller honors both strings) but a coherence + credibility issue.
+
+**Root cause:** `generate-kserve-raw.sh:345` had `deploy_cfg["defaultDeploymentMode"] = "RawDeployment"` — the pre-v0.16 canonical string, retained by inertia through the v0.16 upgrade. Same legacy string on the shipped `sklearn-iris.yaml.tmpl` annotation.
+
+**Fix:** Single-string flip in the Python ConfigMap rewrite block (`generate-kserve-raw.sh:345`) + sample template annotation + all downstream docs (README, generate-kserve-raw-README, kserve-raw-base/README.md.tmpl, QUICK_START Part C, package-readme.md.tmpl, air-gapped-examples.md ×2, architecture-overview mermaid, kserve-version-comparison "Effect on our project" paragraph, migration-journey mermaid). Regenerated `p-kserve-raw/` + `p-kserve-operator/` outputs to sync. **Landed:** commits `<TBD-commit-1>` through `<TBD-commit-4>` on `feat/kserve-0.16`, cherry-picked to `feat/kserve-0.17`. Verified by **T31** (cluster — scaleMetric webhook regression: negative case rejected, positive case with `Standard`+`hpa` annotations deploys clean) + **T32** (no-cluster — static grep confirms ConfigMap + sample both say `Standard`). **Downstream user impact:** none — controller still honors the legacy alias for any user chart hardcoding `"RawDeployment"`.
+
 ### OLM bundle image naming: `-bundle` in image name, not in tag — FIXED
 **Symptom (customer feedback, 2026-06-XX):** Customers wanting to host the OLM bundle image in a separate Artifactory repo (with its own auth scope, retention policy, etc.) couldn't, because the generator named the bundle as `<image>:<tag>-bundle` — sharing the image name with the operator and only differing by tag. Both pushed to the same repo.
 
