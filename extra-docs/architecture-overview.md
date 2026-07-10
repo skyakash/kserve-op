@@ -271,7 +271,7 @@ flowchart LR
 
     GH[Upstream KServe<br/>kserve-master/]:::file -- generate-kserve-raw.sh --> Extractor[Kustomize Build<br/>+ Python ConfigMap patch]:::process
     Extractor -- "Removes Istio/Knative ingress<br/>(disableIstioVirtualHost: true,<br/>disableIngressCreation: true)" --> Raw[Raw YAMLs]:::file
-    Raw -- "Sets defaultDeploymentMode:<br/>RawDeployment" --> PatchedRaw[Functional Raw Manifests<br/>02-kserve-crds, 03-rbac,<br/>04-core, 05-runtimes]:::file
+    Raw -- "Sets defaultDeploymentMode:<br/>Standard" --> PatchedRaw[Functional Raw Manifests<br/>02-kserve-crds, 03-rbac,<br/>04-core, 05-runtimes]:::file
 
     PatchedRaw -- "Copied to assets/ + embedded<br/>via go:embed (apply.go.tmpl)" --> GoCode[Operator Binary<br/>with embedded manifests]:::process
     GoCode -- "Apply-time YAML rewrite:<br/>kserve namespace refs → req.Namespace" --> Bin[Runtime Application]:::file

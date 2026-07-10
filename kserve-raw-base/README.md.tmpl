@@ -41,7 +41,7 @@ The installer (`install.sh`) checks for both cert-manager and python3+PyYAML and
 
 1. `02-kserve-crds`: KServe Custom Resource Definitions.
 2. `03-kserve-rbac`: KServe ClusterRoles and authentication bindings.
-3. `04-kserve-core`: The KServe Controller Manager (patched with `"defaultDeploymentMode": "RawDeployment"` and the `selfsigned-issuer` for webhook TLS).
+3. `04-kserve-core`: The KServe Controller Manager (patched with `"defaultDeploymentMode": "Standard"` — the v0.16+ canonical name for what was called `RawDeployment`; the controller still honors the legacy alias — and the `selfsigned-issuer` for webhook TLS).
 4. `05-kserve-runtimes`: Default Predictor Runtimes (Scikit-Learn, PyTorch, Triton, HuggingFace).
 5. `06-sample-model`: Sample manifests for testing. The directory contains:
    - `sklearn-iris.yaml` — standard iris InferenceService (online `gs://` storage).

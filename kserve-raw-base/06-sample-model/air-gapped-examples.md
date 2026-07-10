@@ -36,7 +36,7 @@ kind: "InferenceService"
 metadata:
   name: "sklearn-iris-offline"
   annotations:
-    serving.kserve.io/deploymentMode: "RawDeployment"
+    serving.kserve.io/deploymentMode: "Standard"
 spec:
   predictor:
     containers:
@@ -75,7 +75,7 @@ kind: "InferenceService"
 metadata:
   name: "sklearn-iris-pvc"
   annotations:
-    serving.kserve.io/deploymentMode: "RawDeployment"
+    serving.kserve.io/deploymentMode: "Standard"
 spec:
   predictor:
     sklearn:

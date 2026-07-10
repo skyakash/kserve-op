@@ -105,7 +105,7 @@ See [QUICK_START.md § Validated toolchain versions](QUICK_START.md#validated-to
 
 This script aggressively parses a local checkout of the `kserve-master` repository and builds a heavily customized, isolated Kustomize deployment package. 
 
-* **Purpose**: Creates an independent directory containing all KServe core components pre-patched for `"defaultDeploymentMode": "RawDeployment"`.
+* **Purpose**: Creates an independent directory containing all KServe core components pre-patched for `"defaultDeploymentMode": "Standard"` (v0.16+ canonical name for what was called `RawDeployment`; the controller still honors the legacy alias for downstream ISVCs).
 * **Action**: Extracts KServe CRDs, RBAC, core controller manifests (patched for Raw mode), and built-in cluster predictors. cert-manager is **not** bundled — it is a cluster prerequisite installed separately.
 * **Component Template Base**: `kserve-raw-base/` 
   * *Contains the markdown READMEs, quick-install shell scripts, and sample Iris payloads dynamically injected into the extracted folder.*
