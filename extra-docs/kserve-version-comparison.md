@@ -254,7 +254,34 @@ The output reveals exactly which template line is emitting the offending metric 
 Our `generate-kserve-raw.sh` now emits `defaultDeploymentMode: Standard` in the ConfigMap — the v0.16+ canonical value aligned with the upstream rename this section describes. Prior builds emitted `RawDeployment`, which the runtime controller still honors as a legacy alias for backwards-compat with existing user ISVCs. The alignment happened 2026-07-08 after a colleague migrating a v0.15-era Helm chart hit the `[cpu] is not a supported metric` webhook rejection above and confirmed the "Standard" fix worked in production.
 
 Coverage locked in:
-- **T31** (cluster-based regression guard): deploys the exact negative case from the migration recipe above (`scaleMetric: cpu`, no dispatch annotations → webhook rejection expected) plus the exact positive case (`Standard` + `hpa` annotations → deploy succeeds). If upstream ever loosens the validator, this test fails and this section stops rotting.
+- **T31** (cluster-based regression guard): deploys a negative case (explicit `deploymentMode: "RawDeployment"` + `scaleMetric: cpu` → webhook rejection expected — see the discovery below for why this uses an *explicit* legacy annotation rather than an annotation-less ISVC) plus the positive case (`Standard` + `hpa` annotations → deploy succeeds). If upstream ever loosens the validator, this test fails and this section stops rotting.
 - **T32** (no-cluster static guard): greps `p-kserve-raw/04-kserve-core/kserve-core.yaml` and `p-kserve-raw/06-sample-model/sklearn-iris.yaml` to confirm both say `"Standard"` and neither says `"RawDeployment"`.
 
-**Downstream user impact of our flip:** none. The controller honors both strings. Users whose charts hardcode `serving.kserve.io/deploymentMode: "RawDeployment"` continue to work. Users whose charts hardcode `scaleMetric: cpu | memory` still need the two-annotation fix documented above.
+### ConfigMap default flip side effect: implicit scaleMetric validation (discovered 2026-07-10)
+
+**Correction to the "Downstream user impact: none" claim originally made above** — there is one real, subtle effect worth documenting.
+
+Upstream KServe has a **defaulting (mutating) webhook** at `pkg/apis/serving/v1beta1/inference_service_defaults.go:158-166` that copies the ConfigMap's `defaultDeploymentMode` onto any ISVC that doesn't set the `serving.kserve.io/deploymentMode` annotation explicitly — **but only when that ConfigMap value is `"Standard"` or `"ModelMesh"`**:
+
+```go
+deploymentMode, ok := isvc.ObjectMeta.Annotations[constants.DeploymentMode]
+if !ok {
+    if deployConfig.DefaultDeploymentMode == string(constants.ModelMeshDeployment) ||
+        deployConfig.DefaultDeploymentMode == string(constants.Standard) {
+        isvc.ObjectMeta.Annotations[constants.DeploymentMode] = deployConfig.DefaultDeploymentMode
+    }
+}
+```
+
+Combined with the validator dispatcher's inner `switch` on `autoscalerClass` (§ "Root cause" above), which has **no `default` case** for the `"Standard"` branch, this produces a behavioral difference:
+
+| ConfigMap default | ISVC with NO explicit `deploymentMode` annotation, `scaleMetric: cpu` |
+|---|---|
+| `"RawDeployment"` (pre-flip) | Defaulter does nothing (condition doesn't match) → dispatcher sees empty `deploymentMode` → `default` branch → KPA validator → **`cpu` REJECTED** |
+| `"Standard"` (post-flip, current) | Defaulter stamps `deploymentMode: "Standard"` → dispatcher matches `"Standard"` case → inner switch on empty `autoscalerClass` has no match and **no default** → function returns `nil` → **`cpu` PASSES UNVALIDATED** |
+
+**In plain terms:** before our flip, any ISVC that didn't set an explicit annotation got its `scaleMetric` implicitly validated via the KPA path (only `concurrency`/`rps` allowed). After our flip, that same ISVC's `scaleMetric` is **not validated at all** unless the user also sets an explicit `autoscalerClass` annotation. This is **more permissive, not more restrictive** — nothing that used to work now breaks — but the implicit safety net that used to catch invalid `scaleMetric` values on annotation-less ISVCs is gone.
+
+**Downstream user impact of our flip, corrected:** users whose charts hardcode the legacy `serving.kserve.io/deploymentMode: "RawDeployment"` string continue to work exactly as before (this explicit annotation still routes to the `default` branch regardless of the ConfigMap value — confirmed by T31's redesigned negative case). Users whose charts set **no `deploymentMode` annotation at all** and rely on implicit validation to catch scaleMetric typos will find that validation is now silently skipped. This is not believed to be a practical problem (no legitimate chart should be relying on webhook rejection as its testing strategy), but it's worth knowing if debugging a scenario where an invalid `scaleMetric` value doesn't get caught post-flip.
+
+This is upstream KServe's own defaulting logic, not a kserve-op bug — no code change needed on our side. Documented here for completeness since it was discovered while validating the flip.
