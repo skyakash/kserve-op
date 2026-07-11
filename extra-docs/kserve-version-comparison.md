@@ -254,7 +254,52 @@ The output reveals exactly which template line is emitting the offending metric 
 Our `generate-kserve-raw.sh` now emits `defaultDeploymentMode: Standard` in the ConfigMap — the v0.16+ canonical value aligned with the upstream rename this section describes. Prior builds emitted `RawDeployment`, which the runtime controller still honors as a legacy alias for backwards-compat with existing user ISVCs. The alignment happened 2026-07-08 after a colleague migrating a v0.15-era Helm chart hit the `[cpu] is not a supported metric` webhook rejection above and confirmed the "Standard" fix worked in production.
 
 Coverage locked in:
-- **T31** (cluster-based regression guard): deploys the exact negative case from the migration recipe above (`scaleMetric: cpu`, no dispatch annotations → webhook rejection expected) plus the exact positive case (`Standard` + `hpa` annotations → deploy succeeds). If upstream ever loosens the validator, this test fails and this section stops rotting.
+- **T31** (cluster-based regression guard): deploys a negative case (webhook rejection expected) plus a positive case (`Standard` + `hpa` annotations → deploy succeeds). If upstream ever loosens the validator, this test fails and this section stops rotting. **The exact negative-case annotation differs by KServe version — see the two subsections below.**
 - **T32** (no-cluster static guard): greps `p-kserve-raw/04-kserve-core/kserve-core.yaml` and `p-kserve-raw/06-sample-model/sklearn-iris.yaml` to confirm both say `"Standard"` and neither says `"RawDeployment"`.
 
-**Downstream user impact of our flip:** none. The controller honors both strings. Users whose charts hardcode `serving.kserve.io/deploymentMode: "RawDeployment"` continue to work. Users whose charts hardcode `scaleMetric: cpu | memory` still need the two-annotation fix documented above.
+### ConfigMap default flip side effect: implicit scaleMetric validation (discovered 2026-07-10 on v0.16, expanded 2026-07-11 on v0.17)
+
+**Correction to the "Downstream user impact: none" claim originally made above** — there is one real, subtle effect worth documenting, and it evolved between v0.16.0 and v0.17.0.
+
+Upstream KServe has a **defaulting (mutating) webhook** at `pkg/apis/serving/v1beta1/inference_service_defaults.go` that touches the `serving.kserve.io/deploymentMode` annotation before the validating webhook ever sees it. Combined with the validator dispatcher's inner `switch` on `autoscalerClass` (§ "Root cause" above), which has **no `default` case** for the `"Standard"` branch, this produces a behavioral difference where `scaleMetric` validation is silently skipped whenever the annotation ends up as `"Standard"` with no `autoscalerClass` set.
+
+**v0.16.0 behavior (discovered 2026-07-10):** the defaulting webhook only stamps `deploymentMode: "Standard"` onto ISVCs that have **NO** `deploymentMode` annotation at all (`!ok` branch), and only when the ConfigMap's own default is `"Standard"`/`"ModelMesh"`:
+
+```go
+// v0.16.0 — pkg/apis/serving/v1beta1/inference_service_defaults.go:158-166
+deploymentMode, ok := isvc.ObjectMeta.Annotations[constants.DeploymentMode]
+if !ok {
+    if deployConfig.DefaultDeploymentMode == string(constants.ModelMeshDeployment) ||
+        deployConfig.DefaultDeploymentMode == string(constants.Standard) {
+        isvc.ObjectMeta.Annotations[constants.DeploymentMode] = deployConfig.DefaultDeploymentMode
+    }
+}
+```
+
+An ISVC with an **explicit** legacy annotation (`deploymentMode: "RawDeployment"`) is left untouched by this logic — it survives to the validator as `"RawDeployment"`, which is not the literal string `"Standard"`, so it correctly falls into the dispatcher's `default:` branch and gets KPA-validated (i.e. `scaleMetric: cpu` is correctly rejected). This is why v0.16's T31 negative case uses an explicit `RawDeployment` annotation.
+
+**v0.17.0 behavior (discovered 2026-07-11 — this is new, not present in v0.16.0):** upstream added a **normalization step** that runs even when the annotation IS present:
+
+```go
+// v0.17.0 — pkg/apis/serving/v1beta1/inference_service_defaults.go:157-169
+deploymentMode, ok := isvc.Annotations[constants.DeploymentMode]
+if ok {
+    if deploymentMode == string(constants.LegacyRawDeployment) {
+        isvc.Annotations[constants.DeploymentMode] = string(constants.Standard)
+        deploymentMode = string(constants.Standard)
+    }
+    if deploymentMode == string(constants.LegacyServerless) {
+        isvc.Annotations[constants.DeploymentMode] = string(constants.Knative)
+        deploymentMode = string(constants.Knative)
+    }
+}
+// ...then the same !ok branch as v0.16 for ConfigMap-default filling...
+```
+
+This means on v0.17, **any** ISVC with an explicit `deploymentMode: "RawDeployment"` annotation is unconditionally rewritten to `"Standard"` before the validator ever runs — regardless of the ConfigMap's own default value. **The v0.16 workaround (explicit `RawDeployment` annotation) no longer produces a rejection on v0.17** — it now silently passes through unvalidated, the same loophole as the annotation-less case. Verified directly on this project's v0.17.0 build: `kubectl apply` of an ISVC with `deploymentMode: "RawDeployment"` + `scaleMetric: cpu` succeeded and reached `Ready` with no rejection.
+
+**v0.17's T31 negative case uses `deploymentMode: "ModelMesh"` instead** — this value is not in upstream's normalization list (only `RawDeployment`→`Standard` and `Serverless`→`Knative` are rewritten), so it survives unmodified to the validator, correctly misses the `"Standard"` case in the dispatcher switch, falls into `default:`, and gets KPA-validated (`scaleMetric: cpu` correctly rejected with the exact `[cpu] is not a supported metric` message). Confirmed working via T31 on the v0.17.0 build.
+
+**Downstream user impact, corrected for each version:**
+- **v0.16.0:** users whose charts hardcode `serving.kserve.io/deploymentMode: "RawDeployment"` continue to get scaleMetric validated as before. Users whose charts set no `deploymentMode` annotation at all lose the implicit validation.
+- **v0.17.0 (this is a real behavior change from v0.16.0, not a regression in this project):** users whose charts hardcode `serving.kserve.io/deploymentMode: "RawDeployment"` **also** lose the implicit scaleMetric validation now, because upstream normalizes the annotation to `"Standard"` before the validator runs. Practically this is still believed to be low-impact — no legitimate chart should be relying on webhook rejection as its testing strategy — but it means the "explicit RawDeployment annotation still gets validated" mitigation documented for v0.16 does **not** carry forward to v0.17. This is purely an upstream KServe behavior change between the two releases; nothing in this project's generator or ConfigMap patching caused it.
