@@ -26,7 +26,7 @@ Supported build environments: **macOS** and **RHEL/Linux x86_64**.
 
 > See [generate-kserve-operator-README.md](./generate-kserve-operator-README.md#installing-prerequisites) for exact copy-paste install commands per platform.
 
-### Validated toolchain versions (known-good for KServe v0.17.0)
+### Validated toolchain versions (known-good for KServe v0.18.0)
 
 The reference build + the 16-test e2e validation (see [`extra-docs/0.17-test-report.md`](extra-docs/0.17-test-report.md)) were performed with these exact versions on macOS arm64. **For reproducible results, match the 🔴 must-match floors at minimum.** The 🟡 should-match items are unlikely to bite you but have known compatibility edges. The 🟢 nice-to-match items behave consistently across recent versions.
 
@@ -49,11 +49,11 @@ The reference build + the 16-test e2e validation (see [`extra-docs/0.17-test-rep
 |---|---|---|
 | cert-manager | **v1.17.2** | per [`0.17-test-report.md`](extra-docs/0.17-test-report.md) §T01 — webhook TLS dependency |
 | OLM | v0.29.0 (auto-installed by `operator-sdk olm install`) | bundles + CSV machinery |
-| Kubernetes | 1.27–1.34 | KServe v0.17.0 supported range |
+| Kubernetes | 1.27–1.34 | KServe v0.18.0 supported range |
 
 **Image pins baked into the build** (set by `generate-kserve-raw.sh` at extraction time — no per-customer choice):
-- `kserve/kserve-controller:v0.17.0`
-- `kserve/storage-initializer:v0.17.0`
+- `kserve/kserve-controller:v0.18.0`
+- `kserve/storage-initializer:v0.18.0`
 - `quay.io/brancz/kube-rbac-proxy:v0.18.0` (inherited from upstream)
 
 #### Self-diagnostic — two scripts at the repo root
@@ -123,7 +123,7 @@ If you are re-running the build (e.g. after a cluster reset), clean both generat
 
 ---
 
-> **Before Step 1 + Step 2, verify your toolchain:** run `bash check-build-prereqs.sh` (smart pass/fail; pass `--customer-registry` if you'll use that flag). It catches the most common build-time errors (PyYAML < 5.1, yq v3, kustomize v4, operator-sdk < 1.42) BEFORE invoking the generators, so you don't waste a 5-minute build on a missing dep. Wire it as a gate: `bash check-build-prereqs.sh && ./generate-kserve-raw.sh ...`. See [§ Validated toolchain versions](#validated-toolchain-versions-known-good-for-kserve-v0170) above for the criticality breakdown and sample output.
+> **Before Step 1 + Step 2, verify your toolchain:** run `bash check-build-prereqs.sh` (smart pass/fail; pass `--customer-registry` if you'll use that flag). It catches the most common build-time errors (PyYAML < 5.1, yq v3, kustomize v4, operator-sdk < 1.42) BEFORE invoking the generators, so you don't waste a 5-minute build on a missing dep. Wire it as a gate: `bash check-build-prereqs.sh && ./generate-kserve-raw.sh ...`. See [§ Validated toolchain versions](#validated-toolchain-versions-known-good-for-kserve-v0180) above for the criticality breakdown and sample output.
 
 ### Step 1 — Extract KServe raw manifests
 ```bash
@@ -131,7 +131,7 @@ If you are re-running the build (e.g. after a cluster reset), clean both generat
 # -z points at the bundled KServe source zip; the script auto-extracts
 # it into ./kserve-source/ (gitignored). After the first run, kserve-source/
 # is reused — -z is only required when the directory doesn't exist.
-./generate-kserve-raw.sh -t p-kserve-raw -z kserve-release-0.17.zip
+./generate-kserve-raw.sh -t p-kserve-raw -z kserve-release-0.18.zip
 ```
 
 ### Step 2 — Generate operator, build image, and create OLM bundle
@@ -447,7 +447,7 @@ Host prerequisites for `install.sh`:
 
 ```bash
 # Generate the standalone deployment package (one-time):
-./generate-kserve-raw.sh -t p-kserve-raw -z kserve-release-0.17.zip
+./generate-kserve-raw.sh -t p-kserve-raw -z kserve-release-0.18.zip
 
 # Default — install into "kserve" namespace
 cd p-kserve-raw && bash install.sh
@@ -485,7 +485,7 @@ NAME                                READY   STATUS    RESTARTS   AGE
 kserve-controller-manager-<rand>    2/2     Running   0          90s
 ```
 
-> **Only one KServe controller pod.** Upstream KServe v0.17 ships two additional controllers (`llmisvc-controller-manager` and `kserve-localmodel-controller-manager` + a `kserve-localmodelnode-agent` DaemonSet) for `LLMInferenceService` and `LocalModelCache` features. This project filters them out at build time — see `generate-kserve-raw.sh`. If you see extra pods, you may be running an older package built before the removal.
+> **Only one KServe controller pod.** Upstream KServe v0.18 ships two additional controllers (`llmisvc-controller-manager` and `kserve-localmodel-controller-manager` + a `kserve-localmodelnode-agent` DaemonSet) for `LLMInferenceService` and `LocalModelCache` features. This project filters them out at build time — see `generate-kserve-raw.sh`. If you see extra pods, you may be running an older package built before the removal.
 
 If cert-manager is missing, the phase will show `CertManagerNotFound` and the operator logs will display:
 ```
@@ -573,7 +573,7 @@ curl -s -H "Content-Type: application/json" \
 
 > **Production note:** Replace `example.com` with your real domain and point DNS to the ingress load balancer IP/hostname. No `/etc/hosts` entry needed in production.
 
-> **Project scope:** this build ships **only the core `kserve-controller-manager`** (InferenceService serving). The `LLMInferenceService` and `LocalModelCache` features from upstream KServe v0.17 are filtered out at extraction time and intentionally not bundled. If you need LLM serving or per-node model caching, see the project history for previous commits that bundled those, or re-introduce them by reverting the filter additions in `generate-kserve-raw.sh`.
+> **Project scope:** this build ships **only the core `kserve-controller-manager`** (InferenceService serving). The `LLMInferenceService` and `LocalModelCache` features from upstream KServe v0.18 are filtered out at extraction time and intentionally not bundled. If you need LLM serving or per-node model caching, see the project history for previous commits that bundled those, or re-introduce them by reverting the filter additions in `generate-kserve-raw.sh`.
 
 ---
 

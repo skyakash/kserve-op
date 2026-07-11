@@ -42,7 +42,7 @@ Before running the generation scripts, ensure the following dependencies are ins
 | kubectl | v1.24+ | Both scripts |
 | Kustomize | v5.0+ | `generate-kserve-raw.sh` (global); auto-downloaded for operator |
 
-> **Validated toolchain (known-good for the v0.17.0 build + e2e round):** see [QUICK_START.md § Validated toolchain versions](QUICK_START.md#validated-toolchain-versions-known-good-for-kserve-v0170) for the exact versions tested + a 🔴/🟡/🟢 criticality breakdown + a one-shot diagnostic script. If a build fails with a tool-version-related error, run the diagnostic and compare.
+> **Validated toolchain (known-good for the v0.18.0 build + e2e round):** see [QUICK_START.md § Validated toolchain versions](QUICK_START.md#validated-toolchain-versions-known-good-for-kserve-v0180) for the exact versions tested + a 🔴/🟡/🟢 criticality breakdown + a one-shot diagnostic script. If a build fails with a tool-version-related error, run the diagnostic and compare.
 
 ### Installing Prerequisites
 
@@ -97,7 +97,7 @@ Run `check-build-prereqs.sh` before the first build. It catches the most common 
 bash check-build-prereqs.sh && bash generate-kserve-operator.sh -t ... -i ... -b -p -o
 ```
 
-See [QUICK_START.md § Validated toolchain versions](QUICK_START.md#validated-toolchain-versions-known-good-for-kserve-v0170) for sample passing/failing output, the full criticality breakdown (🔴 must match / 🟡 should match / 🟢 nice to match), and the `--customer-registry` mode that elevates skopeo to REQUIRED.
+See [QUICK_START.md § Validated toolchain versions](QUICK_START.md#validated-toolchain-versions-known-good-for-kserve-v0180) for sample passing/failing output, the full criticality breakdown (🔴 must match / 🟡 should match / 🟢 nice to match), and the `--customer-registry` mode that elevates skopeo to REQUIRED.
 
 ---
 

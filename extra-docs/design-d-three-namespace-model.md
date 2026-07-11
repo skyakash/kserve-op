@@ -22,7 +22,7 @@ Diagnosis: the predictor pod was created **without an init container**. The stor
 
 ### Root cause
 
-Upstream KServe's release manifest (`kserve-source/install/v0.17.0/kserve.yaml:1-8`) ships a `Namespace` manifest carrying three labels:
+Upstream KServe's release manifest (`kserve-source/install/v0.18.0/kserve.yaml:1-8`) ships a `Namespace` manifest carrying three labels:
 
 ```yaml
 apiVersion: v1
@@ -158,7 +158,7 @@ See `/Users/akashdeo/.claude/plans/i-want-you-to-adaptive-bonbon.md` for the ful
 
 ## 8. References
 
-- **Upstream Namespace manifest with offending label:** `kserve-source/install/v0.17.0/kserve.yaml:1-8` (verified pass-through to `p-kserve-raw/04-kserve-core/kserve-core.yaml:1-8`).
+- **Upstream Namespace manifest with offending label:** `kserve-source/install/v0.18.0/kserve.yaml:1-8` (verified pass-through to `p-kserve-raw/04-kserve-core/kserve-core.yaml:1-8`).
 - **Pod-mutator webhook config with the namespaceSelector guard:** `MutatingWebhookConfiguration inferenceservice.serving.kserve.io`, webhook `inferenceservice.kserve-webhook-server.pod-mutator`, `namespaceSelector.matchExpressions[0]`.
 - **Live differential test results (this session):** iris in `default` → Ready 27s, inference returns `{"predictions":[1]}`. iris in `kserve` → predictor `CrashLoopBackOff`, no init container, `FileNotFoundError: /mnt/models`.
 - **Prior in-flight architecture doc:** `extra-docs/architecture-namespaces.md` (Design C — to be superseded).

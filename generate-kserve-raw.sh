@@ -71,7 +71,7 @@ KSERVE_SOURCE="${SCRIPT_DIR}/kserve-source"
 if [ ! -d "${KSERVE_SOURCE}" ]; then
     if [ -z "${ZIP_PATH}" ]; then
         echo "ERROR: ${KSERVE_SOURCE} not found and no -z/--zip <path> provided."
-        echo "Pass --zip pointing to the bundled KServe source zip (e.g. kserve-release-0.17.zip)."
+        echo "Pass --zip pointing to the bundled KServe source zip (e.g. kserve-release-0.18.zip)."
         exit 1
     fi
     if [ ! -f "${ZIP_PATH}" ]; then
@@ -243,7 +243,7 @@ fi
 #      removed from project scope).
 #   2. inferenceservice-config ConfigMap: force Standard mode (canonical v0.16+
 #      name; controller still honors the legacy "RawDeployment" alias), disable Istio/Ingress.
-#   3. Pin the kserve-controller image to v0.17.0. KServe 0.17 ships :latest,
+#   3. Pin the kserve-controller image to v0.18.0. KServe 0.18 ships :latest,
 #      which drifts; pinning gives reproducibility.
 python3 -c '
 import yaml
@@ -311,14 +311,14 @@ def drop(doc):
     drop_set = DROP.get(k, set())
     return "*" in drop_set or n in drop_set
 
-# Image-tag pinning (replace :latest with :v0.17.0). With llmisvc + localmodel
+# Image-tag pinning (replace :latest with :v0.18.0). With llmisvc + localmodel
 # gone, only the core kserve-controller image needs pinning.
 IMAGE_PIN = {
-    "kserve/kserve-controller": "kserve/kserve-controller:v0.17.0",
+    "kserve/kserve-controller": "kserve/kserve-controller:v0.18.0",
 }
 
 STORAGE_INITIALIZER_OLD = "kserve/storage-initializer:latest"
-STORAGE_INITIALIZER_NEW = "kserve/storage-initializer:v0.17.0"
+STORAGE_INITIALIZER_NEW = "kserve/storage-initializer:v0.18.0"
 
 def pin_image(container):
     img = container.get("image", "")
