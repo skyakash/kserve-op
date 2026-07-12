@@ -10,7 +10,7 @@ operator-sdk olm install && kubectl get pods -n olm
 bash setup-credentials.sh   # generated with your credentials — skip if not present
 
 # 3. Deploy the operator via OLM bundle
-operator-sdk run bundle <your-bundle-image> --pull-secret-name docker-pull-secret
+operator-sdk run bundle <your-bundle-image> --pull-secret-name dockerhub-creds
 # The operator auto-creates the KServeRawMode CR — KServe installation begins immediately!
 
 # 4. Watch progress (Ready in ~60s)
@@ -79,7 +79,7 @@ bash setup-credentials.sh                   # see "pull-secret footprint" below
 ```bash
 operator-sdk olm install                    # creates olm + operators namespaces (OLM infrastructure — not ours)
 bash setup-credentials.sh                   # see "pull-secret footprint" below
-operator-sdk run bundle <your-bundle-image> --pull-secret-name docker-pull-secret
+operator-sdk run bundle <your-bundle-image> --pull-secret-name dockerhub-creds
 # Operator auto-creates KServeRawMode CR — installation begins automatically
 ```
 
@@ -95,7 +95,7 @@ NSES=(kserve-operator-system)
 # NSES+=(default team-a team-b)
 
 for ns in "${NSES[@]}"; do
-  kubectl create secret docker-registry docker-pull-secret \
+  kubectl create secret docker-registry dockerhub-creds \
     --docker-server=<registry> \
     --docker-username=<user> \
     --docker-password=<token> \
@@ -137,7 +137,7 @@ If you have Operator Lifecycle Manager installed, you can deploy the operator as
 operator-sdk run bundle <your-bundle-image> \
   --namespace kserve-operator-system \
   --install-mode SingleNamespace=kserve \
-  --pull-secret-name docker-pull-secret   # omit if image is public
+  --pull-secret-name dockerhub-creds   # omit if image is public
 ```
 
 ---

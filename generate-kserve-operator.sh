@@ -1117,6 +1117,11 @@ OPTIONS:
                              (use if predictor images are private)
   -h, --help                 Show this help and exit
 
+SECRET NAME:
+  The pull secret is always named 'dockerhub-creds' (set at build time via
+  --pull-secret, default 'dockerhub-creds'). Pass this name to
+  --pull-secret-name when running the operator bundle or deployment.
+
 ENV VARS:
   SYSTEM_NS                  Operator's home ns (Design D #1).
                              Default: kserve-operator-system.
