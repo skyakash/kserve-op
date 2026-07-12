@@ -303,3 +303,64 @@ This means on v0.17, **any** ISVC with an explicit `deploymentMode: "RawDeployme
 **Downstream user impact, corrected for each version:**
 - **v0.16.0:** users whose charts hardcode `serving.kserve.io/deploymentMode: "RawDeployment"` continue to get scaleMetric validated as before. Users whose charts set no `deploymentMode` annotation at all lose the implicit validation.
 - **v0.17.0 (this is a real behavior change from v0.16.0, not a regression in this project):** users whose charts hardcode `serving.kserve.io/deploymentMode: "RawDeployment"` **also** lose the implicit scaleMetric validation now, because upstream normalizes the annotation to `"Standard"` before the validator runs. Practically this is still believed to be low-impact — no legitimate chart should be relying on webhook rejection as its testing strategy — but it means the "explicit RawDeployment annotation still gets validated" mitigation documented for v0.16 does **not** carry forward to v0.17. This is purely an upstream KServe behavior change between the two releases; nothing in this project's generator or ConfigMap patching caused it.
+- **v0.18.0 (re-verified fresh during the v0.18 upgrade, 2026-07-12):** the normalization list is **unchanged from v0.17.0** — still only `RawDeployment`→`Standard` and `Serverless`→`Knative`, confirmed by re-reading `inference_service_defaults.go:163-186` in the v0.18.0 source before running T31 (not assumed to carry over blindly — each version bump re-checks this file fresh). v0.17's `deploymentMode: "ModelMesh"` T31 negative-case recipe continues to work unchanged on v0.18: `ModelMesh` is still not in the normalization list, survives to the validator unmodified, correctly misses the `"Standard"` dispatcher case, and gets KPA-validated (`scaleMetric: cpu` rejected with the exact `[cpu] is not a supported metric` message). Confirmed via T31 on the v0.18.0 build.
+
+## Downstream chart compatibility: v0.17 → v0.18
+
+**New in v0.18.0 (not present in v0.17.0 or earlier):** upstream added a blocked-environment-variable admission validator that rejects any container setting `PYTHONPATH`.
+
+### Symptom
+
+```
+admission webhook "inferenceservice.kserve-webhook-server.validator" denied the request:
+    setting PYTHONPATH in container "kserve-container" is not allowed for security reasons
+```
+
+### Root cause
+
+New file `pkg/validation/env_policy.go`:
+
+```go
+// v0.18.0 — pkg/validation/env_policy.go:25-43
+var DefaultBlockedEnvVars = []string{
+    "PYTHONPATH",
+}
+
+func ValidateBlockedEnvVars(containers []corev1.Container, blockedVars []string) error {
+    blocked := make(map[string]bool, len(blockedVars))
+    for _, v := range blockedVars {
+        blocked[v] = true
+    }
+    for _, container := range containers {
+        for _, env := range container.Env {
+            if blocked[env.Name] {
+                return fmt.Errorf("setting %s in container %q is not allowed for security reasons", env.Name, container.Name)
+            }
+        }
+    }
+    return nil
+}
+```
+
+Called from two admission paths, both confirmed in the v0.18.0 source:
+- `pkg/apis/serving/v1beta1/inference_service_validation.go:200` — `validateBlockedEnvVars(isvc)`, checking `Spec.Predictor.Containers` + `InitContainers` + `WorkerSpec.Containers`/`InitContainers`, plus `Spec.Transformer`/`Spec.Explainer` containers.
+- `pkg/webhook/admission/servingruntime/servingruntime_webhook.go:270` — the same check for `ServingRuntime`/`ClusterServingRuntime` `Spec.Containers` + `Spec.WorkerSpec.Containers`.
+
+This is a genuinely new upstream restriction, not a rename or normalization of an existing behavior — any InferenceService, ServingRuntime, or ClusterServingRuntime manifest that previously set `PYTHONPATH` at the container-env level (valid on v0.17 and earlier) is now rejected outright on v0.18.
+
+### Who this hits
+
+Users with a custom predictor, transformer, or explainer image that relies on a runtime `PYTHONPATH` override (commonly to point at a vendored `site-packages` directory, or to work around an import-path quirk) set via the Kubernetes container `env:` field rather than baked into the image.
+
+### Fix
+
+Move the `PYTHONPATH` value into the image itself — either a Dockerfile `ENV PYTHONPATH=...` line, or an `export PYTHONPATH=...` inside the container's own entrypoint/startup script. The validator only inspects the Kubernetes-level `container.Env` list; it has no visibility into an image's baked-in environment.
+
+### Effect on our own project
+
+No impact on the shipped `kserve-raw-base/sklearn-iris.yaml.tmpl` sample — it sets no `PYTHONPATH`. No generator code changes required; this is purely a new upstream admission-time constraint that downstream users of the built operator may need to adapt to, same shape as the v0.15→v0.16 scaleMetric break.
+
+Coverage locked in:
+- **T33** (cluster-based regression guard, new for v0.18): deploys a negative case (`PYTHONPATH` set on the predictor container → webhook rejection expected, exact message verified) plus a positive case (no `PYTHONPATH` → deploy succeeds, inference returns `{"predictions":[1]}`). If upstream ever removes or loosens this validator, T33 fails and this section stops rotting.
+
+Full test execution record: `extra-docs/0.18-test-report.md` §T33. Full memory record: [[kserve-017-to-018-pythonpath-env-block]].

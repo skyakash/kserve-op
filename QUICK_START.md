@@ -28,7 +28,7 @@ Supported build environments: **macOS** and **RHEL/Linux x86_64**.
 
 ### Validated toolchain versions (known-good for KServe v0.18.0)
 
-The reference build + the 16-test e2e validation (see [`extra-docs/0.17-test-report.md`](extra-docs/0.17-test-report.md)) were performed with these exact versions on macOS arm64. **For reproducible results, match the 🔴 must-match floors at minimum.** The 🟡 should-match items are unlikely to bite you but have known compatibility edges. The 🟢 nice-to-match items behave consistently across recent versions.
+The reference build + the 26-test e2e validation (see [`extra-docs/0.18-test-report.md`](extra-docs/0.18-test-report.md)) were performed with these exact versions on macOS arm64. **For reproducible results, match the 🔴 must-match floors at minimum.** The 🟡 should-match items are unlikely to bite you but have known compatibility edges. The 🟢 nice-to-match items behave consistently across recent versions.
 
 | Tool | Validated | Project minimum | Criticality | Why |
 |---|---|---|---|---|
@@ -47,7 +47,7 @@ The reference build + the 16-test e2e validation (see [`extra-docs/0.17-test-rep
 
 | Tool | Validated | Notes |
 |---|---|---|
-| cert-manager | **v1.17.2** | per [`0.17-test-report.md`](extra-docs/0.17-test-report.md) §T01 — webhook TLS dependency |
+| cert-manager | **v1.17.2** | per [`0.18-test-report.md`](extra-docs/0.18-test-report.md) §T01 — webhook TLS dependency |
 | OLM | v0.29.0 (auto-installed by `operator-sdk olm install`) | bundles + CSV machinery |
 | Kubernetes | 1.27–1.34 | KServe v0.18.0 supported range |
 
@@ -705,3 +705,41 @@ grep -niE 'cpu|memory|scaleMetric|scaleTarget|autoscaling|autoscaler|deploymentM
 If `cpu` or `memory` shows up in the output, that's your source — usually either a hardcoded `scaleMetric: cpu` in the template, or a Helm `default "cpu"` fallback in an expression like `{{ .Values.scaleMetric | default "cpu" }}`.
 
 See `extra-docs/kserve-version-comparison.md` § "Downstream chart compatibility: v0.15 → v0.16 breaking change" for the full source-code trace.
+
+### `setting PYTHONPATH in container "X" is not allowed for security reasons`
+
+**Symptom.** InferenceService (or ServingRuntime/ClusterServingRuntime) creation is rejected by the admission webhook:
+```
+admission webhook "inferenceservice.kserve-webhook-server.validator" denied the request:
+    setting PYTHONPATH in container "kserve-container" is not allowed for security reasons
+```
+
+**Who hits this.** Users whose InferenceService, custom ServingRuntime, or Helm chart sets a `PYTHONPATH` environment variable on any container — commonly to point at a vendored/site-packages directory baked into a custom predictor image, or to work around an import-path issue in a custom transformer/explainer.
+
+**Root cause.** Upstream KServe **v0.18.0** added a blocked-env-var admission validator (`pkg/validation/env_policy.go`), rejecting any container in `InferenceService.spec.predictor/transformer/explainer` (including `InitContainers` and `WorkerSpec`) — and separately in `ServingRuntime`/`ClusterServingRuntime` — that sets `PYTHONPATH`. This is new in v0.18; charts and manifests written against v0.17 or earlier had no such restriction. The blocklist is currently a single-item list (`PYTHONPATH` only) but the mechanism is in place for upstream to add more blocked variables in future releases.
+
+Confirmed in source:
+- `kserve-source/pkg/validation/env_policy.go:25-38` — `DefaultBlockedEnvVars = []string{"PYTHONPATH"}` + the exact rejection message
+- `kserve-source/pkg/apis/serving/v1beta1/inference_service_validation.go:200` — `validateBlockedEnvVars(isvc)` call site for InferenceService
+- `kserve-source/pkg/webhook/admission/servingruntime/servingruntime_webhook.go:270` — the parallel check for ServingRuntime/ClusterServingRuntime
+
+**Fix — set the path via the image instead of the pod spec.** `PYTHONPATH` set at the container level is what's blocked; setting it inside the image itself (via `ENV PYTHONPATH=...` in the Dockerfile, or via your predictor's own startup script) is unaffected — the validator only inspects `container.Env`, not the image's baked-in environment.
+
+```dockerfile
+# In your custom predictor/transformer image's Dockerfile:
+ENV PYTHONPATH=/opt/custom-site-packages
+```
+
+If you can't rebuild the image, an alternative is to have your container's entrypoint script `export PYTHONPATH=...` internally before invoking the actual server process — this also bypasses the Kubernetes-level `env:` field the validator inspects.
+
+**Debug recipe** — find every place your chart or manifest sets `PYTHONPATH` at the container level:
+
+```bash
+helm template <release> <chart.tgz> -f values.yaml > /tmp/rendered.yaml
+
+grep -n -B2 -A2 'PYTHONPATH' /tmp/rendered.yaml
+```
+
+Any `PYTHONPATH` hit inside a `container.env[]` block (as opposed to a Dockerfile `ENV` line, which won't show up in rendered Kubernetes manifests) needs to move into the image.
+
+See `extra-docs/kserve-version-comparison.md` § "Downstream chart compatibility: v0.17 → v0.18" for the full source-code trace.
