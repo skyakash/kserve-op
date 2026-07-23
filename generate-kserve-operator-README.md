@@ -140,9 +140,6 @@ chmod +x generate-kserve-operator.sh
 
 > **Three namespaces are hardcoded with sensible defaults** in all generated artifacts: `kserve-operator-system` (operator home), `kserve` (runtime-control), `default` (workload). Customers customize all three at **deploy time** via env vars on the helper scripts (`OPERATOR_NAMESPACE` / `OPERATOR_NS` / `SYSTEM_NS` for ns #1, `KSERVE_NS` for ns #2, `KSERVE_WORKLOAD_NS` for ns #3 — comma-separated multi-ns supported). See [`extra-docs/design-d-three-namespace-model.md`](extra-docs/design-d-three-namespace-model.md) for the canonical Architecture Decision Record.
 - `--pull-secret <name>` : Name of an existing `imagePullSecret` on the cluster (injected into the operator pod spec)
-- `--docker-server <url>` : Registry server URL for pull secret creation (default: `docker.io`)
-- `--docker-username <u>` : Registry username — when set, generates `setup-credentials.sh` in the output package
-- `--docker-password <p>` : Registry password or access token — used alongside `--docker-username`
 - `--cert <path>`        : Injects a certificate into the trusted chain of the Docker build stage (required for firewalls or corporate proxies).
 - `-h, --help`           : Show help message
 

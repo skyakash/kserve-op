@@ -7,7 +7,7 @@
 operator-sdk olm install && kubectl get pods -n olm
 
 # 2. Set up pull credentials (only if images are on a private/rate-limited registry)
-bash setup-credentials.sh   # generated with your credentials — skip if not present
+bash setup-credentials.sh   # prompts for --user/--pass — skip if your images are public
 
 # 3. Deploy the operator via OLM bundle
 operator-sdk run bundle <your-bundle-image> --pull-secret-name dockerhub-creds
@@ -64,9 +64,9 @@ If the operator image is hosted on a private registry (e.g. Docker Hub with auth
 
 See [`extra-docs/design-d-three-namespace-model.md`](../extra-docs/design-d-three-namespace-model.md) for the canonical Architecture Decision Record (the bug Design D fixes, alternatives considered, non-goals).
 
-### Using `setup-credentials.sh` (if provided in this package)
+### Using `setup-credentials.sh`
 
-If this package was generated with `--docker-username` and `--docker-password`, a `setup-credentials.sh` script was created with your credentials baked in. Run it **once on your cluster** at the right moment:
+`setup-credentials.sh` is always included in this package. It never has credentials baked in — you supply them at deploy time, either via `--user`/`--pass` flags or the script's interactive prompt (nothing is stored in the package itself). Run it **once on your cluster** at the right moment:
 
 **For direct manifest deploy (Option B):**
 ```bash
@@ -85,9 +85,9 @@ operator-sdk run bundle <your-bundle-image> --pull-secret-name dockerhub-creds
 
 > **Pull-secret footprint (Design D):** always in `$SYSTEM_NS` (operator home, default `kserve-operator-system`). Also in each `$KSERVE_WORKLOAD_NS` (workload ns, default `default`, comma-separated multi-ns supported) when the package was built with `--customer-registry` OR `--also-workload-ns` is passed. OLM's own namespaces (`olm`, `operators`) don't need our pull secret — OLM uses its own catalog auth.
 
-### Manual pull secret creation (without setup-credentials.sh)
+### Manual pull secret creation (alternative to setup-credentials.sh)
 
-If `setup-credentials.sh` was not generated, create the secret manually (Design D footprint):
+If you'd rather not run the script (e.g. scripting this into your own tooling), create the secret manually (Design D footprint):
 ```bash
 # Always: operator home ns.
 NSES=(kserve-operator-system)
