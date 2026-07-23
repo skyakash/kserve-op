@@ -159,6 +159,6 @@ elif [ "$WARN" -gt 0 ]; then
     printf "${YELLOW}⚠ %d RECOMMENDED check(s) below floor. Build will likely work but watch for edge cases.${NC}\n" "$WARN"
     exit 0
 else
-    printf "${GREEN}✓ All build-side prereqs OK. Safe to run generate-kserve-raw.sh and generate-kserve-operator.sh.${NC}\n"
+    printf '%s✓ All build-side prereqs OK. Safe to run generate-kserve-raw.sh and generate-kserve-operator.sh.%s\n' "${GREEN}" "${NC}"
     exit 0
 fi

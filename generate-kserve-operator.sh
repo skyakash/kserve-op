@@ -24,9 +24,6 @@ AUTO_PUSH=false
 MULTI_PLATFORM=false
 GEN_OLM_BUNDLE=false
 IMAGE_PULL_SECRET=""
-DOCKER_SERVER="docker.io"
-DOCKER_USERNAME=""
-DOCKER_PASSWORD=""
 TRUST_CERT_PATH=""
 HTTP_PROXY_URL=""
 HTTPS_PROXY_URL=""
@@ -64,9 +61,6 @@ while [[ "$#" -gt 0 ]]; do
         --install-mode) INSTALL_MODE="$2"; shift 2 ;;
         --customer-registry) CUSTOMER_REGISTRY="$2"; shift 2 ;;
         --pull-secret) IMAGE_PULL_SECRET="$2"; shift 2 ;;
-        --docker-server) DOCKER_SERVER="$2"; shift 2 ;;
-        --docker-username) DOCKER_USERNAME="$2"; shift 2 ;;
-        --docker-password) DOCKER_PASSWORD="$2"; shift 2 ;;
         --cert) TRUST_CERT_PATH="$2"; shift 2 ;;
         --http-proxy)  HTTP_PROXY_URL="$2";  shift 2 ;;
         --https-proxy) HTTPS_PROXY_URL="$2"; shift 2 ;;
@@ -87,9 +81,6 @@ while [[ "$#" -gt 0 ]]; do
             echo "  --install-mode <mode> OLM install mode: SingleNamespace (default), OwnNamespace, AllNamespaces, MultiNamespace"
             echo "  --customer-registry <prefix>  Customer private registry prefix (e.g., artifactory.example.com/myrepo)"
             echo "  --pull-secret <name> Name of an existing imagePullSecret on the cluster (injected into manager spec)"
-            echo "  --docker-server <url>  Registry URL for pull secret creation (default: docker.io)"
-            echo "  --docker-username <u>  Registry username — generates setup-credentials.sh in the package"
-            echo "  --docker-password <p>  Registry password/token — generates setup-credentials.sh in the package"
             echo "  --cert <path>        Inject a certificate into the trusted chain (for firewall/proxy)"
             echo "  --http-proxy <url>   HTTP proxy URL for builder stage (corporate firewall)."
             echo "                       e.g. http://proxy.example.com:80"
@@ -156,14 +147,14 @@ if [ -n "${IMAGE_TAG}" ]; then
     if [[ "${IMAGE_TAG}" == *:* ]]; then
         BUNDLE_IMG="${IMAGE_TAG%:*}-bundle:${IMAGE_TAG##*:}"
     else
-        BUNDLE_IMG="${BUNDLE_IMG}"
+        BUNDLE_IMG="${IMAGE_TAG}-bundle"
     fi
 fi
 
 # Check if we only need to clean
 if [ "$CLEAN_ONLY" = true ]; then
     if [ -z "$TARGET_DIR_NAME" ]; then
-        read -p "Enter the name of the target operator directory to clean (e.g., my-kserve-operator): " TARGET_DIR_NAME
+        read -rp "Enter the name of the target operator directory to clean (e.g., my-kserve-operator): " TARGET_DIR_NAME
     fi
     if [ -z "$TARGET_DIR_NAME" ] || [ "$TARGET_DIR_NAME" == "/" ] || [ "$TARGET_DIR_NAME" == "." ] || [ "$TARGET_DIR_NAME" == ".." ]; then 
         echo "ERROR: Invalid target directory name for clean."
@@ -288,22 +279,22 @@ container_remote_image_exists() {
 
 # 2. Gather Interactive Parameters for Missing Inputs
 if [ -z "$TARGET_DIR_NAME" ]; then
-    read -p "Enter the name of the target operator directory (e.g., my-kserve-operator): " TARGET_DIR_NAME
+    read -rp "Enter the name of the target operator directory (e.g., my-kserve-operator): " TARGET_DIR_NAME
 fi
 if [ -z "$TARGET_DIR_NAME" ]; then echo "ERROR: Target directory name cannot be empty."; exit 1; fi
 
 if [ -z "$GO_MODULE" ]; then
-    read -p "Enter your Go module path (e.g., github.com/username/my-kserve-operator): " GO_MODULE
+    read -rp "Enter your Go module path (e.g., github.com/username/my-kserve-operator): " GO_MODULE
 fi
 if [ -z "$GO_MODULE" ]; then echo "ERROR: Go module path cannot be empty."; exit 1; fi
 
 if [ -z "$API_DOMAIN" ]; then
-    read -p "Enter the API domain for your Custom Resource (e.g., akashdeo.com): " API_DOMAIN
+    read -rp "Enter the API domain for your Custom Resource (e.g., akashdeo.com): " API_DOMAIN
 fi
 if [ -z "$API_DOMAIN" ]; then echo "ERROR: API domain cannot be empty."; exit 1; fi
 
 if [ -z "$MANIFEST_DIR" ]; then
-    read -p "Enter the path to your extracted KServe manifests folder (e.g., ./a-kserve-deploy): " MANIFEST_DIR
+    read -rp "Enter the path to your extracted KServe manifests folder (e.g., ./a-kserve-deploy): " MANIFEST_DIR
 fi
 if [ ! -d "$MANIFEST_DIR" ]; then
     echo "ERROR: Could not find manifest directory at '$MANIFEST_DIR'."
@@ -311,7 +302,7 @@ if [ ! -d "$MANIFEST_DIR" ]; then
 fi
 
 if [ -z "$IMAGE_TAG" ]; then
-    read -p "Enter your target Docker image tag (e.g., quay.io/akashdeo/kserve-raw-operator:v1): " IMAGE_TAG
+    read -rp "Enter your target Docker image tag (e.g., quay.io/akashdeo/kserve-raw-operator:v1): " IMAGE_TAG
 fi
 if [ -z "$IMAGE_TAG" ]; then echo "ERROR: Docker image tag cannot be empty."; exit 1; fi
 
@@ -567,7 +558,7 @@ echo "[5/5] Docker Image Actions..."
 if [ "$AUTO_BUILD" = true ]; then
     BUILD_CHOICE="y"
 else
-    read -p "Do you want to compile and package the Docker Image now? [y/N]: " BUILD_CHOICE
+    read -rp "Do you want to compile and package the Docker Image now? [y/N]: " BUILD_CHOICE
 fi
 
 if [[ "$BUILD_CHOICE" =~ ^[Yy]$ ]]; then
@@ -617,7 +608,7 @@ if [ "$MULTI_PLATFORM" != true ] && [[ "$BUILD_CHOICE" =~ ^[Yy]$ || "$AUTO_PUSH"
         echo "Skipping image push (pass -p to push automatically)."
     else
         echo ""
-        read -p "Do you want to PUSH the image '${IMAGE_TAG}' to the registry? [y/N]: " PUSH_CHOICE
+        read -rp "Do you want to PUSH the image '${IMAGE_TAG}' to the registry? [y/N]: " PUSH_CHOICE
     fi
 
     if [[ "$PUSH_CHOICE" =~ ^[Yy]$ ]]; then
@@ -839,8 +830,16 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Prompt for credentials if not provided (not needed for --archive only)
+# Prompt for credentials if not provided (not needed for --archive only).
+# If stdin isn't a terminal (CI, automation, a non-interactive shell), `read`
+# hits EOF immediately and fails under `set -e`, killing the script silently
+# with no output. Detect that case explicitly and fail loudly instead.
 if [[ "${MODE}" != "archive" ]]; then
+    if [[ ( -z "${DEST_USER}" || -z "${DEST_PASS}" ) && ! -t 0 ]]; then
+        echo "ERROR: --user/--pass not provided and stdin is not a terminal (non-interactive run)." >&2
+        echo "       Pass credentials explicitly: bash mirror-images.sh --${MODE} --user <user> --pass <token>" >&2
+        exit 1
+    fi
     if [[ -z "${DEST_USER}" ]]; then
         read -rp "Registry username: " DEST_USER
     fi
@@ -849,6 +848,9 @@ if [[ "${MODE}" != "archive" ]]; then
     fi
 fi
 
+# DEST_CREDS_ARG is deliberately word-split (not quoted) at each use below:
+# it must expand to two argv entries ("--dest-creds" and "user:pass") for
+# skopeo. Quoting it would pass both as one argument and break the flag.
 DEST_CREDS_ARG=""
 [[ -n "${DEST_USER}" ]] && DEST_CREDS_ARG="--dest-creds ${DEST_USER}:${DEST_PASS}"
 
@@ -868,8 +870,10 @@ case "${MODE}" in
   load)
     echo "Loading and pushing images from ./images/ to destination registry..."
     echo "  Pushing operator image to ${DST_OPERATOR}..."
+    # shellcheck disable=SC2086
     skopeo copy --override-os linux ${DEST_CREDS_ARG} oci-archive:images/operator.tar docker://${DST_OPERATOR}
     echo "  Pushing OLM bundle image to ${DST_BUNDLE}..."
+    # shellcheck disable=SC2086
     skopeo copy --override-os linux ${DEST_CREDS_ARG} oci-archive:images/bundle.tar docker://${DST_BUNDLE}
     echo ""
     echo "Done. Images are now available in the destination registry."
@@ -878,9 +882,11 @@ case "${MODE}" in
   online)
     echo "Mirroring images directly between registries..."
     echo "  Mirroring operator image..."
+    # shellcheck disable=SC2086
     skopeo copy --override-os linux ${DEST_CREDS_ARG} docker://${SRC_OPERATOR} docker://${DST_OPERATOR}
     if skopeo inspect --override-os linux docker://${SRC_BUNDLE} &>/dev/null; then
         echo "  Mirroring OLM bundle image..."
+        # shellcheck disable=SC2086
         skopeo copy --override-os linux ${DEST_CREDS_ARG} docker://${SRC_BUNDLE} docker://${DST_BUNDLE}
     fi
     echo ""
@@ -961,7 +967,7 @@ echo "================================================================="
 echo "  A) OLM bundle  : operator-sdk run bundle (recommended)"
 echo "  B) Direct YAML : kubectl apply -f operator-deployment.yaml"
 echo "================================================================="
-read -p "Enter choice [A/B]: " CHOICE
+read -rp "Enter choice [A/B]: " CHOICE
 
 case "\$(echo "\${CHOICE}" | tr '[:lower:]' '[:upper:]')" in
   A)
@@ -1603,6 +1609,10 @@ kubectl wait --for=condition=Ready pods -l control-plane=kserve-controller-manag
 # verifying identity.
 echo "Probing webhook TLS endpoint..."
 PROBE_NAME="kserve-webhook-probe-$$"
+# Single-quoted heredoc-style script body below is intentional: it's the
+# in-cluster probe Pod's own shell script, not local bash — quoting protects
+# its $i/$(seq...) syntax from expanding on the host before kubectl ships it.
+# shellcheck disable=SC2016
 if ! kubectl run -n "${KSERVE_NS}" "${PROBE_NAME}" \
         --image=curlimages/curl:8.10.1 \
         --restart=Never \

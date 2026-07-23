@@ -35,7 +35,7 @@ SCRIPT_DIR=$(pwd)
 
 if [ "$CLEAN_ONLY" = true ]; then
     if [ -z "$TARGET_DIR_NAME" ]; then
-        read -p "Enter the name of the target directory to clean (e.g., my-kserve-deploy): " TARGET_DIR_NAME
+        read -rp "Enter the name of the target directory to clean (e.g., my-kserve-deploy): " TARGET_DIR_NAME
     fi
     if [ -z "$TARGET_DIR_NAME" ] || [ "$TARGET_DIR_NAME" == "/" ] || [ "$TARGET_DIR_NAME" == "." ] || [ "$TARGET_DIR_NAME" == ".." ]; then
         echo "ERROR: Invalid target directory name for clean."
@@ -52,7 +52,7 @@ if [ "$CLEAN_ONLY" = true ]; then
 fi
 
 if [ -z "$TARGET_DIR_NAME" ]; then
-    read -p "Enter the name of the target directory to create (e.g., my-kserve-deploy): " TARGET_DIR_NAME
+    read -rp "Enter the name of the target directory to create (e.g., my-kserve-deploy): " TARGET_DIR_NAME
 fi
 
 if [ -z "$TARGET_DIR_NAME" ]; then
@@ -245,6 +245,9 @@ fi
 #      name; controller still honors the legacy "RawDeployment" alias), disable Istio/Ingress.
 #   3. Pin the kserve-controller image to v0.18.0. KServe 0.18 ships :latest,
 #      which drifts; pinning gives reproducibility.
+# Single-quoted heredoc is intentional: this is a Python script, not shell —
+# quoting protects its own syntax from bash expansion.
+# shellcheck disable=SC2016
 python3 -c '
 import yaml
 import json
